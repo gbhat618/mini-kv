@@ -25,7 +25,6 @@ func connect(host string, port int) (net.Conn, error) {
 
 func sendCommand(conn net.Conn, cmd string) string {
 	fmt.Fprintf(conn, "%s\n", cmd)
-
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	data, _ := io.ReadAll(conn)
 	return string(data)
