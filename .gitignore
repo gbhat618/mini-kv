@@ -1,0 +1,32 @@
+# Binaries
+mini-kv-server
+mini-kv-server-arm64
+mini-kv-server-darwin-amd64
+mini-kv-server-darwin-arm64
+mini-kv-server.exe
+mini-kv-cli
+mini-kv-cli-arm64
+mini-kv-cli-darwin-amd64
+mini-kv-cli-darwin-arm64
+mini-kv-cli.exe
+
+# Test binaries
+e2e-test
+
+# Reports
+benchmark_report.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Go
+*.test
+coverage.txt
+
+# Docker

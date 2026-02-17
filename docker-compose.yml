@@ -1,0 +1,54 @@
+services:
+  mini-kv-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    ports:
+      - "6379:6379"
+    networks:
+      - mini-kv-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6379"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 2s
+    tmpfs:
+      - /tmp
+
+  mini-kv-cli:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cli
+    depends_on:
+      mini-kv-server:
+        condition: service_healthy
+    networks:
+      - mini-kv-network
+    environment:
+      - MINI_KV_HOST=mini-kv-server
+      - MINI_KV_PORT=6379
+
+  mini-kv-test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    depends_on:
+      mini-kv-server:
+        condition: service_healthy
+    networks:
+      - mini-kv-network
+
+  mini-kv-bench:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bench
+    depends_on:
+      mini-kv-server:
+        condition: service_healthy
+    networks:
+      - mini-kv-network
+
+networks:
+  mini-kv-network:
+    driver: bridge

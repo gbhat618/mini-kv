@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Get next release number
+        id: version
+        run: |
+          # Get the latest release number
+          latest=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name // "v0"' | sed 's/v//')
+          next=$((latest + 1))
+          echo "RELEASE_VERSION=$next" >> $GITHUB_ENV
+          echo "Release version: $next"
+
+      - name: Build server
+        working-directory: server
+        run: |
+          go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-server-arm64
+
+      - name: Build CLI
+        working-directory: cli
+        run: |
+          go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-cli
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-cli-arm64
+
+      - name: Build macOS binaries
+        run: |
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-server-darwin-amd64
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-server-darwin-arm64
+          cd cli && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-cli-darwin-amd64
+          cd cli && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-cli-darwin-arm64
+
+      - name: Build Windows binaries
+        run: |
+          cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-server.exe
+          cd cli && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-cli.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: Release v${{ env.RELEASE_VERSION }}
+          draft: false
+          prerelease: false
+          files: |
+            mini-kv-server
+            mini-kv-server-arm64
+            mini-kv-server-darwin-amd64
+            mini-kv-server-darwin-arm64
+            mini-kv-server.exe
+            mini-kv-cli
+            mini-kv-cli-arm64
+            mini-kv-cli-darwin-amd64
+            mini-kv-cli-darwin-arm64
+            mini-kv-cli.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
