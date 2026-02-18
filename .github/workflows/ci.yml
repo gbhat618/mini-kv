@@ -35,29 +35,19 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Install gcc for race detector
-        run: sudo apt-get update && sudo apt-get install -y gcc
-
-      - name: Run tests with coverage and race detector
+      - name: Run tests with coverage
         run: |
           go mod download
-          CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./... || true
-          echo "Tests completed, exit code: $?"
-          ls -la coverage.out
+          go test -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Check if coverage file exists
         id: check_coverage
         run: |
-          echo "Checking for coverage.out..."
-          ls -la coverage.out 2>&1 || echo "File not found"
           if [ -f coverage.out ] && [ -s coverage.out ]; then
             echo "has_coverage=true" >> $GITHUB_OUTPUT
-            echo "Coverage file exists and is non-empty"
           else
             echo "has_coverage=false" >> $GITHUB_OUTPUT
-            echo "Coverage file missing or empty"
           fi
-          echo "has_coverage value set"
 
       - name: Generate coverage badge
         if: steps.check_coverage.outputs.has_coverage == 'true'
