@@ -40,23 +40,22 @@ jobs:
           go mod download
           cd server && go test -coverprofile=../coverage.out -covermode=atomic ./...
 
-      - name: Check if coverage file exists
-        id: check_coverage
+      - name: Get coverage percentage
+        id: coverage
         run: |
-          if [ -f coverage.out ] && [ -s coverage.out ]; then
-            echo "has_coverage=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_coverage=false" >> $GITHUB_OUTPUT
-          fi
+          COVERAGE=$(go tool cover -func=coverage.out | grep total: | grep -Eo '[0-9]+\.[0-9]+')
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
 
-      - name: Generate coverage badge
-        if: steps.check_coverage.outputs.has_coverage == 'true'
-        uses: tj-actions/coverage-badge-go@v3
-        with:
-          filename: coverage.out
+      - name: Generate badge
+        run: |
+          apt-get update && apt-get install -y bc
+          COVERAGE=${{ steps.coverage.outputs.coverage }}
+          COLOR="red"
+          if (( $(echo "$COVERAGE > 50" | bc -l) )); then COLOR="orange"; fi
+          if (( $(echo "$COVERAGE > 70" | bc -l) )); then COLOR="green"; fi
+          curl -s "https://img.shields.io/badge/Coverage-${COVERAGE}%25-${COLOR}" > coverage_badge.svg
 
       - name: Commit and push badge
-        if: steps.check_coverage.outputs.has_coverage == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -64,25 +63,11 @@ jobs:
           git commit -m "Update coverage badge" || true
           git push || true
 
-      - name: Upload coverage badge
-        if: steps.check_coverage.outputs.has_coverage == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-badge
-          path: coverage_badge.svg
-
-      - name: Generate coverage summary
-        if: steps.check_coverage.outputs.has_coverage == 'true'
-        run: go tool cover -func=coverage.out | tee coverage-summary.txt
-
       - name: Upload coverage reports
-        if: steps.check_coverage.outputs.has_coverage == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-reports
-          path: |
-            coverage.out
-            coverage-summary.txt
+          path: coverage.out
 
   build:
     name: Build
