@@ -58,14 +58,11 @@ jobs:
 
       - name: Commit and push badge
         run: |
-          ls -la *.svg 2>&1 || echo "No svg files"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add -f coverage_badge.svg
-          git status
-          git diff --staged
-          git commit -m "Update coverage badge" || echo "No changes to commit"
-          git push origin main || echo "Push failed"
+          echo "Current directory: $(pwd)"
+          echo "Files in root:"
+          ls -la
+          echo "Checking for badge file:"
+          cat coverage_badge.svg || echo "File not found"
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@v4
