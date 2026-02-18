@@ -38,23 +38,21 @@ jobs:
       - name: Get coverage percentage
         id: coverage
         run: |
-          echo "Testing in server directory..."
-          cd server && go test -coverprofile=../coverage.out -covermode=atomic ./...
-          echo "Checking coverage..."
-          go tool cover -func=../coverage.out
-          echo "Getting total..."
-          COVERAGE=$(go tool cover -func=../coverage.out | grep total: | grep -Eo '[0-9]+\.[0-9]+' || echo "0")
-          echo "Coverage: $COVERAGE%"
+          cd server
+          go test -coverprofile=coverage.out -covermode=atomic ./...
+          cat coverage.out
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $NF}' | tr -d '%')
+          echo "Raw coverage: $COVERAGE"
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
 
       - name: Generate badge
         run: |
           apt-get update && apt-get install -y bc
           COVERAGE=${{ steps.coverage.outputs.coverage }}
+          echo "Coverage for badge: $COVERAGE"
           COLOR="red"
           if (( $(echo "$COVERAGE > 50" | bc -l) )); then COLOR="orange"; fi
           if (( $(echo "$COVERAGE > 70" | bc -l) )); then COLOR="green"; fi
-          echo "Generating badge with coverage: $COVERAGE%, color: $COLOR"
           curl -s "https://img.shields.io/badge/Coverage-${COVERAGE}%25-${COLOR}" > coverage_badge.svg
 
       - name: Commit and push badge
