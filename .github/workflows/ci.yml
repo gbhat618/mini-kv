@@ -61,13 +61,8 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add -f coverage_badge.svg
-          git diff --staged --quiet && echo "NO_CHANGES=true" >> $GITHUB_OUTPUT || true
-          if [ "$NO_CHANGES" != "true" ]; then
-            git commit -m "Update coverage badge"
-            git push
-          else
-            echo "No changes to commit"
-          fi
+          git commit -m "Update coverage badge" || true
+          git push || true
 
       - name: Upload coverage badge
         if: steps.check_coverage.outputs.has_coverage == 'true'
