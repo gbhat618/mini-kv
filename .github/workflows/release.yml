@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -22,37 +24,34 @@ jobs:
       - name: Get next release number
         id: version
         run: |
-          # Get the latest release number
           latest=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name // "v0"' | sed 's/v//')
           next=$((latest + 1))
           echo "RELEASE_VERSION=$next" >> $GITHUB_ENV
           echo "Release version: $next"
 
-      - name: Build server
-        working-directory: server
+      - name: Build server Linux
         run: |
-          go mod download
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-server
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-server-arm64
+          cd server && go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-server .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-server-arm64 .
 
-      - name: Build CLI
-        working-directory: cli
+      - name: Build CLI Linux
         run: |
-          go mod download
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-cli
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-cli-arm64
+          cd cli && go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-cli .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-cli-arm64 .
 
       - name: Build macOS binaries
         run: |
-          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-server-darwin-amd64
-          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-server-darwin-arm64
-          cd cli && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-cli-darwin-amd64
-          cd cli && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-cli-darwin-arm64
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-server-darwin-amd64 .
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-server-darwin-arm64 .
+          cd ../cli && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-cli-darwin-amd64 .
+          cd ../cli && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-cli-darwin-arm64 .
 
       - name: Build Windows binaries
         run: |
-          cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-server.exe
-          cd cli && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-cli.exe
+          cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-server.exe .
+          cd ../cli && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-cli.exe .
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
