@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml/badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml)
 [![Release](https://github.com/gbhat618/mini-kv/actions/workflows/release.yml/badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/release.yml)
-[![Coverage](./badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml)
+[![Coverage](./coverage_badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml)
 
 A high-performance key-value store written in Go, inspired by Redis.
 
