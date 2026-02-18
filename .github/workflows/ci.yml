@@ -72,9 +72,11 @@ jobs:
           path: coverage_badge.svg
 
       - name: Generate coverage summary
+        if: steps.check_coverage.outputs.has_coverage == 'true'
         run: go tool cover -func=coverage.out | tee coverage-summary.txt
 
       - name: Upload coverage reports
+        if: steps.check_coverage.outputs.has_coverage == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-reports
