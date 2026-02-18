@@ -39,17 +39,21 @@ jobs:
         run: |
           cd server
           go test -coverprofile=coverage.out -covermode=atomic ./...
+          echo "=== Full coverage output ==="
+          go tool cover -func=coverage.out
           COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
+          echo "Coverage value: [$COVERAGE]"
           echo "Coverage=$COVERAGE" > /tmp/coverage.txt
-          echo "Coverage: $COVERAGE"
 
       - name: Generate badge
         run: |
+          cat /tmp/coverage.txt
           COVERAGE=$(cat /tmp/coverage.txt | cut -d= -f2)
-          echo "Badge Coverage: $COVERAGE"
+          echo "Badge Coverage: [$COVERAGE]"
           if [ -z "$COVERAGE" ]; then COVERAGE=0; fi
           if (( $(echo "$COVERAGE < 50" | bc -l) )); then COLOR="red"; elif (( $(echo "$COVERAGE < 70" | bc -l) )); then COLOR="orange"; else COLOR="green"; fi
           curl -s "https://img.shields.io/badge/Coverage-${COVERAGE}%25-${COLOR}" > coverage_badge.svg
+          cat coverage_badge.svg
 
       - name: Commit and push badge
         run: |
