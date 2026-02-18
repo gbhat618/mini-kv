@@ -41,8 +41,7 @@ jobs:
       - name: Run tests with coverage and race detector
         run: |
           go mod download
-          CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./...
-        continue-on-error: true
+          CGO_ENABLED=1 go test -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Check if coverage file exists
         id: check_coverage
@@ -56,6 +55,7 @@ jobs:
             echo "has_coverage=false" >> $GITHUB_OUTPUT
             echo "Coverage file missing or empty"
           fi
+          echo "has_coverage value set"
 
       - name: Generate coverage badge
         if: steps.check_coverage.outputs.has_coverage == 'true'
