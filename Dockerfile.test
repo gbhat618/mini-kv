@@ -1,0 +1,19 @@
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+COPY tests/go.mod ./
+RUN go mod download
+
+COPY tests/ ./
+RUN CGO_ENABLED=0 GOOS=linux go test -c -o e2e-test .
+
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates busybox-extras
+
+WORKDIR /app
+
+COPY --from=builder /app/e2e-test .
+
+CMD ["./e2e-test", "-test.v"]
