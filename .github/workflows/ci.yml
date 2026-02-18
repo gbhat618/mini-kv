@@ -38,10 +38,10 @@ jobs:
       - name: Run tests with coverage
         run: |
           cd server
-          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+          go test -coverprofile=coverage.out -covermode=atomic ./...
           echo "=== Coverage Output ==="
           go tool cover -func=coverage.out
-          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | sed 's/%//')
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
           echo "Final Coverage: $COVERAGE"
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
 
