@@ -1,8 +1,8 @@
 # Mini-KV
 
-[![CI](https://github.com/gbhat/mini-kv/actions/workflows/ci.yml/badge.svg)](https://github.com/gbhat/mini-kv/actions/workflows/ci.yml)
-[![Release](https://github.com/gbhat/mini-kv/actions/workflows/release.yml/badge.svg)](https://github.com/gbhat/mini-kv/actions/workflows/release.yml)
-[![codecov](https://codecov.io/gh/gbhat/mini-kv/branch/main/graph/badge.svg)](https://codecov.io/gh/gbhat/mini-kv)
+[![CI](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml/badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/ci.yml)
+[![Release](https://github.com/gbhat618/mini-kv/actions/workflows/release.yml/badge.svg)](https://github.com/gbhat618/mini-kv/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/gbhat618/mini-kv/branch/main/graph/badge.svg)](https://codecov.io/gh/gbhat618/mini-kv)
 
 A high-performance key-value store written in Go, inspired by Redis.
 
