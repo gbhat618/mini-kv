@@ -2,7 +2,7 @@ services:
   mini-kv-server:
     build:
       context: .
-      dockerfile: docker/Dockerfile.server
+      dockerfile: Dockerfile.server
     ports:
       - "6379:6379"
     networks:
@@ -19,7 +19,7 @@ services:
   mini-kv-cli:
     build:
       context: .
-      dockerfile: docker/Dockerfile.cli
+      dockerfile: Dockerfile.cli
     depends_on:
       mini-kv-server:
         condition: service_healthy
@@ -32,7 +32,7 @@ services:
   mini-kv-test:
     build:
       context: .
-      dockerfile: docker/Dockerfile.test
+      dockerfile: Dockerfile.test
     depends_on:
       mini-kv-server:
         condition: service_healthy
@@ -42,7 +42,7 @@ services:
   mini-kv-bench:
     build:
       context: .
-      dockerfile: docker/Dockerfile.bench
+      dockerfile: Dockerfile.bench
     depends_on:
       mini-kv-server:
         condition: service_healthy
