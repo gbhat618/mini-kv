@@ -26,6 +26,14 @@ mini-kv/
 - `PING` - Ping server
 - `FLUSHDB` - Clear all keys
 
+### Transaction Commands
+
+- `BEGIN` - Start a transaction
+- `COMMIT` - Commit the current transaction
+- `ROLLBACK` - Rollback the current transaction
+
+Transactions provide isolation: changes within a transaction are not visible to other clients until committed.
+
 ## Running
 
 ### Build and Test

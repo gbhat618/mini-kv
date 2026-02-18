@@ -139,3 +139,223 @@ func TestConcurrentMixedOperations(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestTransactionBeginCommit(t *testing.T) {
+	s := NewServer(":6379")
+	kv := s.kv
+
+	kv.Set("key1", "original")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	resp := s.processCommand("BEGIN", txn, &inTxn)
+	if resp != "+OK\r\n" {
+		t.Errorf("Expected OK, got %s", resp)
+	}
+	if !inTxn {
+		t.Error("Expected inTxn to be true")
+	}
+
+	resp = s.processCommand("SET key1 modified", txn, &inTxn)
+	if resp != "+OK\r\n" {
+		t.Errorf("Expected OK, got %s", resp)
+	}
+
+	resp = s.processCommand("GET key1", txn, &inTxn)
+	if !contains(resp, "modified") {
+		t.Errorf("Expected modified, got %s", resp)
+	}
+
+	val, _ := kv.Get("key1")
+	if val != "original" {
+		t.Errorf("Expected original (not visible outside txn), got %s", val)
+	}
+
+	resp = s.processCommand("COMMIT", txn, &inTxn)
+	if resp != "+OK\r\n" {
+		t.Errorf("Expected OK, got %s", resp)
+	}
+
+	val, _ = kv.Get("key1")
+	if val != "modified" {
+		t.Errorf("Expected modified after commit, got %s", val)
+	}
+}
+
+func TestTransactionRollback(t *testing.T) {
+	s := NewServer(":6379")
+	kv := s.kv
+
+	kv.Set("key1", "original")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	s.processCommand("BEGIN", txn, &inTxn)
+	s.processCommand("SET key1 modified", txn, &inTxn)
+
+	resp := s.processCommand("ROLLBACK", txn, &inTxn)
+	if resp != "+OK\r\n" {
+		t.Errorf("Expected OK, got %s", resp)
+	}
+
+	val, _ := kv.Get("key1")
+	if val != "original" {
+		t.Errorf("Expected original after rollback, got %s", val)
+	}
+}
+
+func TestTransactionMultipleKeys(t *testing.T) {
+	s := NewServer(":6379")
+	kv := s.kv
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	s.processCommand("BEGIN", txn, &inTxn)
+	s.processCommand("SET key1 val1", txn, &inTxn)
+	s.processCommand("SET key2 val2", txn, &inTxn)
+	s.processCommand("SET key3 val3", txn, &inTxn)
+	s.processCommand("DEL key2", txn, &inTxn)
+
+	_ = s.processCommand("COMMIT", txn, &inTxn)
+
+	keys := kv.Keys()
+	if len(keys) != 2 {
+		t.Errorf("Expected 2 keys, got %d", len(keys))
+	}
+
+	_, ok := kv.Get("key1")
+	if !ok {
+		t.Error("Expected key1 to exist")
+	}
+	_, ok = kv.Get("key2")
+	if ok {
+		t.Error("Expected key2 to be deleted")
+	}
+	_, ok = kv.Get("key3")
+	if !ok {
+		t.Error("Expected key3 to exist")
+	}
+}
+
+func TestTransactionIsolation(t *testing.T) {
+	s := NewServer(":6379")
+	kv := s.kv
+
+	kv.Set("key1", "original")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	s.processCommand("BEGIN", txn, &inTxn)
+	s.processCommand("SET key1 modified", txn, &inTxn)
+
+	resp := s.processCommand("GET key1", txn, &inTxn)
+	if !contains(resp, "modified") {
+		t.Errorf("Expected modified in transaction, got %s", resp)
+	}
+
+	val, _ := kv.Get("key1")
+	if val != "original" {
+		t.Errorf("Expected original in main store (isolation), got %s", val)
+	}
+
+	s.processCommand("COMMIT", txn, &inTxn)
+
+	val, _ = kv.Get("key1")
+	if val != "modified" {
+		t.Errorf("Expected modified after commit, got %s", val)
+	}
+}
+
+func TestTransactionNested(t *testing.T) {
+	s := NewServer(":6379")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := true
+
+	resp := s.processCommand("BEGIN", txn, &inTxn)
+	if !contains(resp, "transaction already in progress") {
+		t.Errorf("Expected error for nested BEGIN, got %s", resp)
+	}
+}
+
+func TestTransactionNoCommit(t *testing.T) {
+	s := NewServer(":6379")
+	kv := s.kv
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	s.processCommand("BEGIN", txn, &inTxn)
+	s.processCommand("SET key1 value1", txn, &inTxn)
+
+	_ = s.processCommand("COMMIT", txn, &inTxn)
+	s.processCommand("GET key1", txn, &inTxn)
+
+	val, _ := kv.Get("key1")
+	if val != "value1" {
+		t.Errorf("Expected value1 after commit, got %s", val)
+	}
+}
+
+func TestTransactionRollbackWithoutBegin(t *testing.T) {
+	s := NewServer(":6379")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	resp := s.processCommand("COMMIT", txn, &inTxn)
+	if !contains(resp, "no transaction in progress") {
+		t.Errorf("Expected error for COMMIT without BEGIN, got %s", resp)
+	}
+
+	resp = s.processCommand("ROLLBACK", txn, &inTxn)
+	if !contains(resp, "no transaction in progress") {
+		t.Errorf("Expected error for ROLLBACK without BEGIN, got %s", resp)
+	}
+}
+
+func TestTransactionFlushDBBlocked(t *testing.T) {
+	s := NewServer(":6379")
+
+	txn := &Transaction{
+		pending: make(map[string]string),
+		deleted: make(map[string]bool),
+	}
+	inTxn := false
+
+	s.processCommand("BEGIN", txn, &inTxn)
+
+	resp := s.processCommand("FLUSHDB", txn, &inTxn)
+	if !contains(resp, "cannot FLUSHDB within a transaction") {
+		t.Errorf("Expected error for FLUSHDB in txn, got %s", resp)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[:len(substr)] == substr || contains(s[1:], substr)))
+}
