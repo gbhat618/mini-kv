@@ -55,10 +55,6 @@ jobs:
         with:
           filename: coverage.out
 
-      - name: List files
-        if: steps.check_coverage.outputs.has_coverage == 'true'
-        run: ls -la *.svg
-
       - name: Commit and push badge
         if: steps.check_coverage.outputs.has_coverage == 'true'
         run: |
