@@ -38,7 +38,7 @@ jobs:
       - name: Run tests with coverage
         run: |
           go mod download
-          go test -coverprofile=coverage.out -covermode=atomic ./...
+          cd server && go test -coverprofile=../coverage.out -covermode=atomic ./...
 
       - name: Check if coverage file exists
         id: check_coverage
