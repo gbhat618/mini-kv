@@ -35,15 +35,15 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Run tests with coverage
-        run: |
-          go mod download
-          cd server && go test -coverprofile=../coverage.out -covermode=atomic ./...
-
       - name: Get coverage percentage
         id: coverage
         run: |
-          cd server && COVERAGE=$(go tool cover -func=../coverage.out | grep total: | grep -Eo '[0-9]+\.[0-9]+' || echo "0")
+          echo "Testing in server directory..."
+          cd server && go test -coverprofile=../coverage.out -covermode=atomic ./...
+          echo "Checking coverage..."
+          go tool cover -func=../coverage.out
+          echo "Getting total..."
+          COVERAGE=$(go tool cover -func=../coverage.out | grep total: | grep -Eo '[0-9]+\.[0-9]+' || echo "0")
           echo "Coverage: $COVERAGE%"
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
 
@@ -54,6 +54,7 @@ jobs:
           COLOR="red"
           if (( $(echo "$COVERAGE > 50" | bc -l) )); then COLOR="orange"; fi
           if (( $(echo "$COVERAGE > 70" | bc -l) )); then COLOR="green"; fi
+          echo "Generating badge with coverage: $COVERAGE%, color: $COLOR"
           curl -s "https://img.shields.io/badge/Coverage-${COVERAGE}%25-${COLOR}" > coverage_badge.svg
 
       - name: Commit and push badge
