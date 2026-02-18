@@ -39,9 +39,9 @@ jobs:
         run: go test -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Generate coverage badge
-        uses: johanbrandhorst/coverage-badge@latest
+        uses: tj-actions/coverage-badge-go@v3
         with:
-          output: badge.svg
+          filename: coverage.out
 
       - name: Commit and push badge
         run: |
