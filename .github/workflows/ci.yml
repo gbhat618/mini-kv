@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -21,6 +22,51 @@ jobs:
         run: |
           docker compose build
           docker compose up --abort-on-container-exit mini-kv-test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Generate coverage badge
+        uses: johanbrandhorst/coverage-badge@latest
+        with:
+          output: badge.svg
+
+      - name: Commit and push badge
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add badge.svg
+          git commit -m "Update coverage badge" || echo "No changes to commit"
+          git push
+
+      - name: Upload coverage badge
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-badge
+          path: badge.svg
+
+      - name: Generate coverage summary
+        run: go tool cover -func=coverage.out | tee coverage-summary.txt
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.out
+            coverage-summary.txt
 
   build:
     name: Build
