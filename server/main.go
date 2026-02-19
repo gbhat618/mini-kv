@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"crypto/tls"
+	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"log"
 	"net"
 	"os"
@@ -28,9 +31,12 @@ const (
 
 const (
 	DefaultMaxKeySize   = 256
-	DefaultMaxValueSize = 1024 * 1024 * 10 // 10MB
+	DefaultMaxValueSize = 1024 * 1024 * 10
 	DefaultMaxConns     = 100
 	DefaultReadTimeout  = 30 * time.Second
+	HashReplicas        = 150
+	GossipInterval      = 1 * time.Second
+	GossipTimeout       = 5 * time.Second
 )
 
 var (
@@ -44,6 +50,10 @@ var (
 	tlsCertFile  string
 	tlsKeyFile   string
 	readTimeout  time.Duration
+	clusterMode  bool
+	clusterPeers string
+	nodeID       string
+	gossipPort   int
 )
 
 func init() {
@@ -56,6 +66,10 @@ func init() {
 	flag.StringVar(&tlsCertFile, "tls-cert", "", "TLS certificate file (leave empty for no TLS)")
 	flag.StringVar(&tlsKeyFile, "tls-key", "", "TLS key file (leave empty for no TLS)")
 	flag.DurationVar(&readTimeout, "read-timeout", DefaultReadTimeout, "Connection read timeout")
+	flag.BoolVar(&clusterMode, "cluster", false, "Enable clustering mode")
+	flag.StringVar(&clusterPeers, "peers", "", "Comma-separated list of peer addresses (for cluster mode)")
+	flag.StringVar(&nodeID, "node-id", "", "Unique node ID (generated if not provided)")
+	flag.IntVar(&gossipPort, "gossip-port", 16379, "Port for inter-node gossip communication")
 	logger = log.New(os.Stdout, "", 0)
 }
 
@@ -169,19 +183,279 @@ type Transaction struct {
 	deleted map[string]bool
 }
 
+type NodeInfo struct {
+	ID        string
+	Addr      string
+	Timestamp int64
+}
+
+type Cluster struct {
+	mu           sync.RWMutex
+	nodes        map[string]*NodeInfo
+	hashRing     *ConsistentHash
+	nodeID       string
+	selfAddr     string
+	gossipAddr   string
+	gossipTicker *time.Ticker
+	shutdownChan chan struct{}
+}
+
+type ConsistentHash struct {
+	mu         sync.RWMutex
+	replicas   int
+	ring       map[uint32]string
+	sortedKeys []uint32
+}
+
+func NewConsistentHash(replicas int) *ConsistentHash {
+	return &ConsistentHash{
+		replicas:   replicas,
+		ring:       make(map[uint32]string),
+		sortedKeys: make([]uint32, 0),
+	}
+}
+
+func (ch *ConsistentHash) AddNode(nodeID, addr string) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+
+	for i := 0; i < ch.replicas; i++ {
+		key := fmt.Sprintf("%s-%d-%s", nodeID, i, addr)
+		hash := crc32.ChecksumIEEE([]byte(key))
+		ch.ring[hash] = nodeID
+		ch.sortedKeys = append(ch.sortedKeys, hash)
+	}
+
+	for i := 0; i < len(ch.sortedKeys)-1; i++ {
+		for j := i + 1; j < len(ch.sortedKeys); j++ {
+			if ch.sortedKeys[i] > ch.sortedKeys[j] {
+				ch.sortedKeys[i], ch.sortedKeys[j] = ch.sortedKeys[j], ch.sortedKeys[i]
+			}
+		}
+	}
+}
+
+func (ch *ConsistentHash) RemoveNode(nodeID string, addr string) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+
+	for i := 0; i < ch.replicas; i++ {
+		key := fmt.Sprintf("%s-%d-%s", nodeID, i, addr)
+		hash := crc32.ChecksumIEEE([]byte(key))
+		delete(ch.ring, hash)
+	}
+
+	ch.sortedKeys = make([]uint32, 0)
+	for hash := range ch.ring {
+		ch.sortedKeys = append(ch.sortedKeys, hash)
+	}
+
+	for i := 0; i < len(ch.sortedKeys)-1; i++ {
+		for j := i + 1; j < len(ch.sortedKeys); j++ {
+			if ch.sortedKeys[i] > ch.sortedKeys[j] {
+				ch.sortedKeys[i], ch.sortedKeys[j] = ch.sortedKeys[j], ch.sortedKeys[i]
+			}
+		}
+	}
+}
+
+func (ch *ConsistentHash) GetNode(key string) string {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+
+	if len(ch.ring) == 0 {
+		return ""
+	}
+
+	hash := crc32.ChecksumIEEE([]byte(key))
+	idx := 0
+	for i, k := range ch.sortedKeys {
+		if hash <= k {
+			idx = i
+			break
+		}
+		if i == len(ch.sortedKeys)-1 {
+			idx = 0
+			break
+		}
+	}
+
+	return ch.ring[ch.sortedKeys[idx]]
+}
+
+func (ch *ConsistentHash) GetAllNodes() []string {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+
+	nodes := make(map[string]bool)
+	for _, nodeID := range ch.ring {
+		nodes[nodeID] = true
+	}
+
+	result := make([]string, 0, len(nodes))
+	for nodeID := range nodes {
+		result = append(result, nodeID)
+	}
+	return result
+}
+
+func NewCluster(nodeID, selfAddr, gossipAddr string) *Cluster {
+	return &Cluster{
+		nodes:        make(map[string]*NodeInfo),
+		hashRing:     NewConsistentHash(HashReplicas),
+		nodeID:       nodeID,
+		selfAddr:     selfAddr,
+		gossipAddr:   gossipAddr,
+		gossipTicker: time.NewTicker(GossipInterval),
+		shutdownChan: make(chan struct{}),
+	}
+}
+
+func (c *Cluster) AddNode(nodeID, addr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.nodes[nodeID] = &NodeInfo{
+		ID:        nodeID,
+		Addr:      addr,
+		Timestamp: time.Now().Unix(),
+	}
+	c.hashRing.AddNode(nodeID, addr)
+	info("Cluster: Added node %s at %s", nodeID, addr)
+}
+
+func (c *Cluster) RemoveNode(nodeID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		c.hashRing.RemoveNode(nodeID, node.Addr)
+		delete(c.nodes, nodeID)
+		info("Cluster: Removed node %s", nodeID)
+	}
+}
+
+func (c *Cluster) GetNodeForKey(key string) string {
+	return c.hashRing.GetNode(key)
+}
+
+func (c *Cluster) GetMembers() []*NodeInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	members := make([]*NodeInfo, 0, len(c.nodes))
+	for _, node := range c.nodes {
+		members = append(members, node)
+	}
+	return members
+}
+
+func (c *Cluster) GetNodeAddr(nodeID string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		return node.Addr
+	}
+	return ""
+}
+
+func (c *Cluster) GetNodeID() string {
+	return c.nodeID
+}
+
+func (c *Cluster) StartGossip(peers []string) {
+	if len(peers) == 0 {
+		info("Cluster: No peers to gossip with")
+		return
+	}
+
+	for _, peer := range peers {
+		go c.gossipWithNode(peer)
+	}
+}
+
+func (c *Cluster) gossipWithNode(peerAddr string) {
+	for {
+		select {
+		case <-c.shutdownChan:
+			return
+		case <-c.gossipTicker.C:
+			c.sendGossip(peerAddr)
+		}
+	}
+}
+
+func (c *Cluster) sendGossip(peerAddr string) {
+	conn, err := net.Dial("tcp", peerAddr)
+	if err != nil {
+		debug("Cluster: Failed to connect to peer %s: %v", peerAddr, err)
+		return
+	}
+	defer conn.Close()
+
+	c.mu.RLock()
+	nodesJSON, _ := json.Marshal(c.nodes)
+	c.mu.RUnlock()
+
+	msg := fmt.Sprintf("CLUSTER_GOSSIP %s %s\n", c.nodeID, nodesJSON)
+	conn.Write([]byte(msg))
+
+	reader := bufio.NewReader(conn)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		debug("Cluster: Failed to read gossip response from %s: %v", peerAddr, err)
+		return
+	}
+
+	if strings.HasPrefix(response, "+CLUSTER_GOSSIP") {
+		parts := strings.Fields(response)
+		if len(parts) >= 3 {
+			var peerNodes map[string]*NodeInfo
+			if err := json.Unmarshal([]byte(parts[2]), &peerNodes); err == nil {
+				c.mergeNodes(peerNodes)
+			}
+		}
+	}
+}
+
+func (c *Cluster) mergeNodes(peerNodes map[string]*NodeInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for nodeID, node := range peerNodes {
+		if existing, ok := c.nodes[nodeID]; !ok || node.Timestamp > existing.Timestamp {
+			c.nodes[nodeID] = node
+			c.hashRing.AddNode(nodeID, node.Addr)
+		}
+	}
+}
+
+func (c *Cluster) Shutdown() {
+	close(c.shutdownChan)
+	c.gossipTicker.Stop()
+}
+
 type Server struct {
 	addr         string
 	kv           *MiniKV
 	tlsConfig    *tls.Config
 	connCount    atomic.Int32
 	shutdownChan chan struct{}
+	cluster      *Cluster
 }
 
-func NewServer(addr string) *Server {
+func NewServer(addr string, gossipAddr string) *Server {
+	var cluster *Cluster
+	if clusterMode {
+		cluster = NewCluster(nodeID, addr, gossipAddr)
+	}
+
 	return &Server{
 		addr:         addr,
 		kv:           NewMiniKV(),
 		shutdownChan: make(chan struct{}),
+		cluster:      cluster,
 	}
 }
 
@@ -215,11 +489,28 @@ func (s *Server) Start() error {
 	}
 	info("Max connections: %d, Max key size: %d, Max value size: %d", maxConns, maxKeySize, maxValueSize)
 
+	if s.cluster != nil {
+		info("Cluster mode enabled")
+		s.cluster.AddNode(s.cluster.nodeID, s.addr)
+
+		if clusterPeers != "" {
+			peers := strings.Split(clusterPeers, ",")
+			for i := range peers {
+				peers[i] = strings.TrimSpace(peers[i])
+			}
+			info("Cluster: Connecting to peers: %v", peers)
+			s.cluster.StartGossip(peers)
+		}
+	}
+
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-signalChan
 		logError("Shutdown signal received")
+		if s.cluster != nil {
+			s.cluster.Shutdown()
+		}
 		close(s.shutdownChan)
 		ln.Close()
 	}()
@@ -308,6 +599,29 @@ func (s *Server) processAuth(cmd string) string {
 	return "-ERR invalid password\r\n"
 }
 
+func (s *Server) forwardToNode(cmd string, nodeID string) string {
+	addr := s.cluster.GetNodeAddr(nodeID)
+	if addr == "" {
+		return "-ERR node not found\r\n"
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Sprintf("-ERR failed to connect to node: %v\r\n", err)
+	}
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "%s\n", cmd)
+
+	reader := bufio.NewReader(conn)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Sprintf("-ERR failed to read response: %v\r\n", err)
+	}
+
+	return response
+}
+
 func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) string {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
@@ -316,6 +630,18 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 	}
 
 	cmdUpper := strings.ToUpper(parts[0])
+
+	if cmdUpper == "CLUSTER" && len(parts) > 1 {
+		return s.processClusterCommand(strings.ToUpper(parts[1]), parts[2:])
+	}
+
+	if s.cluster != nil && cmdUpper != "CLUSTER" && cmdUpper != "PING" && cmdUpper != "AUTH" && cmdUpper != "INFO" {
+		targetNode := s.cluster.GetNodeForKey(strings.Join(parts, " "))
+		if targetNode != s.cluster.GetNodeID() && targetNode != "" {
+			debug("Forwarding command to node %s", targetNode)
+			return s.forwardToNode(cmd, targetNode)
+		}
+	}
 
 	switch cmdUpper {
 	case "BEGIN":
@@ -479,6 +805,15 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 		debug("PING")
 		return "+PONG\r\n"
 
+	case "INFO":
+		info := fmt.Sprintf("mini-kv server\r\n")
+		info += fmt.Sprintf("cluster_mode: %v\r\n", s.cluster != nil)
+		if s.cluster != nil {
+			info += fmt.Sprintf("cluster_nodes: %d\r\n", len(s.cluster.GetMembers()))
+			info += fmt.Sprintf("cluster_node_id: %s\r\n", s.cluster.GetNodeID())
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
+
 	case "AUTH":
 		warn("AUTH: already authenticated")
 		return "-ERR already authenticated\r\n"
@@ -489,17 +824,70 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 	}
 }
 
+func (s *Server) processClusterCommand(subCmd string, args []string) string {
+	if s.cluster == nil {
+		return "-ERR cluster mode not enabled\r\n"
+	}
+
+	switch subCmd {
+	case "INFO":
+		members := s.cluster.GetMembers()
+		info := fmt.Sprintf("cluster_enabled: true\r\n")
+		info += fmt.Sprintf("cluster_node_id: %s\r\n", s.cluster.GetNodeID())
+		info += fmt.Sprintf("cluster_nodes: %d\r\n", len(members))
+		for _, m := range members {
+			info += fmt.Sprintf("cluster_node: %s %s\r\n", m.ID, m.Addr)
+		}
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
+
+	case "MEMBERS":
+		members := s.cluster.GetMembers()
+		if len(members) == 0 {
+			return "*0\r\n"
+		}
+		result := fmt.Sprintf("*%d\r\n", len(members))
+		for _, m := range members {
+			nodeInfo := fmt.Sprintf("%s %s", m.ID, m.Addr)
+			result += fmt.Sprintf("$%d\r\n%s\r\n", len(nodeInfo), nodeInfo)
+		}
+		return result
+
+	case "JOIN":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'cluster join' command\r\n"
+		}
+		peerAddr := args[0]
+		s.cluster.StartGossip([]string{peerAddr})
+		info("Cluster: Joined peer %s", peerAddr)
+		return "+OK\r\n"
+
+	default:
+		return fmt.Sprintf("-ERR unknown cluster command '%s'\r\n", subCmd)
+	}
+}
+
+func generateNodeID() string {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(time.Now().UnixNano()))
+	return fmt.Sprintf("node-%x", b)
+}
+
 func main() {
 	parseFlags()
 
+	if nodeID == "" {
+		nodeID = generateNodeID()
+	}
+
 	addr := ":6379"
+	gossipAddr := ":16379"
 	flag.Parse()
 	args := flag.Args()
 	if len(args) > 0 {
 		addr = args[0]
 	}
 
-	server := NewServer(addr)
+	server := NewServer(addr, gossipAddr)
 
 	if tlsCertFile != "" && tlsKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)

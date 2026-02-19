@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -144,7 +145,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 }
 
 func TestTransactionBeginCommit(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	kv := s.kv
 
 	kv.Set("key1", "original")
@@ -190,7 +191,7 @@ func TestTransactionBeginCommit(t *testing.T) {
 }
 
 func TestTransactionRollback(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	kv := s.kv
 
 	kv.Set("key1", "original")
@@ -216,7 +217,7 @@ func TestTransactionRollback(t *testing.T) {
 }
 
 func TestTransactionMultipleKeys(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	kv := s.kv
 
 	txn := &Transaction{
@@ -253,7 +254,7 @@ func TestTransactionMultipleKeys(t *testing.T) {
 }
 
 func TestTransactionIsolation(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	kv := s.kv
 
 	kv.Set("key1", "original")
@@ -286,7 +287,7 @@ func TestTransactionIsolation(t *testing.T) {
 }
 
 func TestTransactionNested(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{
 		pending: make(map[string]string),
@@ -301,7 +302,7 @@ func TestTransactionNested(t *testing.T) {
 }
 
 func TestTransactionNoCommit(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	kv := s.kv
 
 	txn := &Transaction{
@@ -323,7 +324,7 @@ func TestTransactionNoCommit(t *testing.T) {
 }
 
 func TestTransactionRollbackWithoutBegin(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{
 		pending: make(map[string]string),
@@ -343,7 +344,7 @@ func TestTransactionRollbackWithoutBegin(t *testing.T) {
 }
 
 func TestTransactionFlushDBBlocked(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{
 		pending: make(map[string]string),
@@ -360,7 +361,7 @@ func TestTransactionFlushDBBlocked(t *testing.T) {
 }
 
 func TestMaxValueSizeValidation(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 
 	origMaxValue := maxValueSize
 	maxValueSize = 10
@@ -389,7 +390,7 @@ func TestConnectionLimit(t *testing.T) {
 	authPassword = ""
 	defer func() { authPassword = origAuth }()
 
-	server := NewServer(":0")
+	server := NewServer(":0", ":0")
 
 	var connCount int32
 
@@ -414,7 +415,7 @@ func TestConnectionLimit(t *testing.T) {
 }
 
 func TestAllCommands(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
@@ -445,7 +446,7 @@ func TestAllCommands(t *testing.T) {
 }
 
 func TestTransactionWithCommands(t *testing.T) {
-	s := NewServer(":6379")
+	s := NewServer(":6379", ":16379")
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
@@ -474,6 +475,149 @@ func TestTransactionWithCommands(t *testing.T) {
 	resp = s.processCommand("GET key1", txn, &inTxn)
 	if !strings.Contains(resp, "val1") {
 		t.Errorf("GET after commit failed: %s", resp)
+	}
+}
+
+func TestConsistentHash(t *testing.T) {
+	ch := NewConsistentHash(150)
+
+	ch.AddNode("node1", "localhost:6379")
+	ch.AddNode("node2", "localhost:6380")
+	ch.AddNode("node3", "localhost:6381")
+
+	keys := []string{}
+	for i := 0; i < 100; i++ {
+		keys = append(keys, fmt.Sprintf("key%d", i))
+	}
+	for i := 0; i < 100; i++ {
+		keys = append(keys, fmt.Sprintf("user:%d", i))
+	}
+	for i := 0; i < 100; i++ {
+		keys = append(keys, fmt.Sprintf("session:%d", i))
+	}
+
+	nodeCounts := make(map[string]int)
+	for _, key := range keys {
+		node := ch.GetNode(key)
+		if node == "" {
+			t.Errorf("Expected node for key %s, got empty", key)
+		}
+		nodeCounts[node]++
+	}
+
+	if len(nodeCounts) != 3 {
+		t.Errorf("Expected keys distributed across 3 nodes, got %d", len(nodeCounts))
+	}
+
+	for node, count := range nodeCounts {
+		t.Logf("Node %s has %d keys", node, count)
+	}
+
+	ch.RemoveNode("node2", "localhost:6380")
+
+	allNodes := ch.GetAllNodes()
+	if len(allNodes) != 2 {
+		t.Errorf("Expected 2 nodes after removal, got %d", len(allNodes))
+	}
+}
+
+func TestClusterInfo(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	if s.cluster == nil {
+		t.Error("Expected cluster to be initialized")
+	}
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("CLUSTER INFO", txn, &inTxn)
+	if !strings.Contains(resp, "cluster_enabled: true") {
+		t.Errorf("Expected cluster enabled, got: %s", resp)
+	}
+}
+
+func TestClusterMembers(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	s.cluster.AddNode("node1", "localhost:6379")
+	s.cluster.AddNode("node2", "localhost:6380")
+	s.cluster.AddNode("node3", "localhost:6381")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("CLUSTER MEMBERS", txn, &inTxn)
+	if !strings.Contains(resp, "node1") || !strings.Contains(resp, "node2") || !strings.Contains(resp, "node3") {
+		t.Errorf("Expected all nodes in MEMBERS response, got: %s", resp)
+	}
+}
+
+func TestClusterKeyDistribution(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	s.cluster.AddNode("node1", "localhost:6379")
+	s.cluster.AddNode("node2", "localhost:6380")
+	s.cluster.AddNode("node3", "localhost:6381")
+
+	testKeys := []string{}
+	for i := 0; i < 50; i++ {
+		testKeys = append(testKeys, fmt.Sprintf("user:%d", i))
+		testKeys = append(testKeys, fmt.Sprintf("session:%d", i))
+		testKeys = append(testKeys, fmt.Sprintf("cache:key%d", i))
+	}
+
+	distribution := make(map[string]int)
+	for _, key := range testKeys {
+		node := s.cluster.GetNodeForKey(key)
+		distribution[node]++
+	}
+
+	if len(distribution) < 2 {
+		t.Errorf("Expected keys distributed across at least 2 nodes, got %d nodes", len(distribution))
+	}
+
+	for node, count := range distribution {
+		t.Logf("Node %s has %d keys", node, count)
+	}
+}
+
+func TestClusterInfoWithoutClusterMode(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = false
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("CLUSTER INFO", txn, &inTxn)
+	if !strings.Contains(resp, "cluster mode not enabled") {
+		t.Errorf("Expected cluster not enabled error, got: %s", resp)
+	}
+}
+
+func TestServerInfo(t *testing.T) {
+	s := NewServer(":6379", ":16379")
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("INFO", txn, &inTxn)
+	if !strings.Contains(resp, "mini-kv server") {
+		t.Errorf("Expected server info, got: %s", resp)
 	}
 }
 
