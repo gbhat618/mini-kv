@@ -24,13 +24,10 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Get next release number
-        id: version
+      - name: Run Server Tests
         run: |
-          latest=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name // "v0"' | sed 's/v//')
-          next=$((latest + 1))
-          echo "RELEASE_VERSION=$next" >> $GITHUB_ENV
-          echo "Release version: $next"
+          cd server
+          go test -v ./...
 
       - name: Build server Linux
         run: |
