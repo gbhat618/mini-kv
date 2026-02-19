@@ -24,7 +24,7 @@ func main() {
 		internal.NodeID = generateNodeID()
 	}
 
-	addr := internal.ServerPort
+	addr := internal.GetAddress()
 	gossipAddr := internal.GetGossipAddress()
 
 	server := internal.NewServer(addr, gossipAddr)

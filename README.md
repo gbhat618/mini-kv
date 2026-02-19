@@ -17,6 +17,41 @@ mini-kv/
 └── docker-compose.yml
 ```
 
+## Quick Start
+
+### Start Server
+```bash
+# Default (localhost:6379)
+./bin/server
+
+# Custom host and port (bind to all interfaces)
+./bin/server -host 0.0.0.0 -port 6379
+
+# With config file
+./bin/server -config /path/to/config.ini
+
+# With management console
+./bin/server -console -console-port 8080
+```
+
+### Use CLI
+```bash
+# Connect to local server (default localhost:6379)
+./bin/cli PING
+./bin/cli GET mykey
+./bin/cli SET mykey myvalue
+
+# Connect to remote server
+./bin/cli -h 192.168.1.100 -p 6380 GET key
+./bin/cli --host server.example.com --port 6379 SET key value
+
+# With config file
+./bin/cli -config /path/to/cli.ini GET key
+
+# Short flags
+./bin/cli -h localhost -p 6379 PING
+```
+
 ## Supported Commands
 
 - `GET <key>` - Get value by key
@@ -34,12 +69,86 @@ mini-kv/
 
 Transactions provide isolation: changes within a transaction are not visible to other clients until committed.
 
+## Configuration
+
+### Config File (INI format)
+
+**Server config (`server/mini-kv.ini`):**
+```ini
+[server]
+host = 0.0.0.0
+port = 6379
+
+[security]
+password = yourpassword
+tls_cert = /path/to/cert.pem
+tls_key = /path/to/key.pem
+
+[limits]
+max_key_size = 256
+max_value_size = 10485760
+max_connections = 100
+read_timeout = 30
+
+[cluster]
+enabled = true
+peers = localhost:16380,localhost:16381
+node_id = my-node-1
+gossip_port = 16379
+
+[console]
+enabled = true
+port = 8080
+```
+
+**CLI config (`cli/cli.ini`):**
+```ini
+[server]
+host = localhost
+port = 6379
+
+[security]
+password = yourpassword
+
+[tls]
+enabled = true
+skip_verify = true
+```
+
+### CLI Flags
+
+**Server:**
+- `-host` - Server host (default: localhost, use 0.0.0.0 for all interfaces)
+- `-port` - Server port (default: 6379)
+- `-config` - Config file path
+- `-password` - Authentication password
+- `-tls-cert` - TLS certificate file
+- `-tls-key` - TLS key file
+- `-max-key-size` - Maximum key size (default: 256)
+- `-max-value-size` - Maximum value size (default: 10MB)
+- `-max-connections` - Maximum connections (default: 100)
+- `-read-timeout` - Read timeout in seconds (default: 30)
+- `-cluster` - Enable clustering
+- `-peers` - Cluster peers
+- `-node-id` - Cluster node ID
+- `-gossip-port` - Gossip port (default: 16379)
+- `-console` - Enable management console
+- `-console-port` - Console port (default: 8080)
+
+**CLI:**
+- `-h, --host` - Server hostname (default: localhost)
+- `-p, --port` - Server port (default: 6379)
+- `-config` - Config file path
+- `-password` - Authentication password
+- `-tls` - Use TLS
+- `-tls-skip-verify` - Skip TLS verification
+
 ## Security Features
 
 ### Authentication
 ```bash
 ./bin/server -password "yourpassword"
-./bin/cli --password "yourpassword" GET key
+./bin/cli -password "yourpassword" GET key
 ```
 
 ### TLS/SSL
@@ -47,12 +156,6 @@ Transactions provide isolation: changes within a transaction are not visible to 
 ./bin/server -tls-cert cert.pem -tls-key key.pem
 ./bin/cli --tls GET key
 ```
-
-### Configuration Options
-- `-max-key-size` - Maximum key size (default: 256 bytes)
-- `-max-value-size` - Maximum value size (default: 10MB)
-- `-max-connections` - Maximum concurrent connections (default: 100)
-- `-read-timeout` - Connection read timeout (default: 30s)
 
 ## Clustering
 
@@ -73,12 +176,6 @@ Transactions provide isolation: changes within a transaction are not visible to 
 - `CLUSTER MEMBERS` - List all cluster members
 - `CLUSTER JOIN <peer>` - Join a peer node
 - `CLUSTER ADDSLAVE <addr>` - Add a slave node
-
-### Cluster Options
-- `-cluster` - Enable clustering mode
-- `-peers` - Comma-separated list of peer addresses
-- `-node-id` - Unique node ID (auto-generated if not provided)
-- `-gossip-port` - Port for inter-node gossip (default: 16379)
 
 ## Replication & Failover
 
@@ -102,6 +199,23 @@ Transactions provide isolation: changes within a transaction are not visible to 
 - Automatic health checking of master node
 - Automatic failover when master becomes unreachable
 - Slave promotion to master on failover
+
+## Management Console
+
+The management console provides a real-time web UI for monitoring and managing your Mini-KV instance.
+
+### Features
+- Real-time connection count
+- Real-time KV pair count
+- Add/Edit/Delete keys from UI
+- Live updates via WebSocket
+
+### Usage
+```bash
+./bin/server -console -console-port 8080 -host 0.0.0.0
+```
+
+Then visit `http://localhost:8080` in your browser.
 
 ## Running
 

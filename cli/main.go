@@ -7,16 +7,140 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
+const (
+	DefaultHost = "localhost"
+	DefaultPort = 6379
+)
+
 var (
+	host          string
+	port          int
 	tlsFlag       bool
 	tlsSkipVerify bool
 	password      string
+	configFile    string
 )
 
-func init() {
+type CLIConfig struct {
+	Server struct {
+		Host string `ini:"host"`
+		Port int    `ini:"port"`
+	} `ini:"server"`
+	Security struct {
+		Password string `ini:"password"`
+	} `ini:"security"`
+	TLS struct {
+		Enabled    bool `ini:"enabled"`
+		SkipVerify bool `ini:"skip_verify"`
+	} `ini:"tls"`
+}
+
+func loadConfig(filename string) (*CLIConfig, error) {
+	if filename == "" {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	cfg := &CLIConfig{}
+	if err := parseINI(string(data), cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func parseINI(data string, cfg *CLIConfig) error {
+	lines := strings.Split(data, "\n")
+	var currentSection string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			currentSection = strings.Trim(line, "[]")
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch currentSection {
+		case "server":
+			if key == "host" {
+				cfg.Server.Host = value
+			} else if key == "port" {
+				if port, err := strconv.Atoi(value); err == nil {
+					cfg.Server.Port = port
+				}
+			}
+		case "security":
+			if key == "password" {
+				cfg.Security.Password = value
+			}
+		case "tls":
+			if key == "enabled" {
+				cfg.TLS.Enabled = value == "true"
+			} else if key == "skip_verify" {
+				cfg.TLS.SkipVerify = value == "true"
+			}
+		}
+	}
+
+	return nil
+}
+
+func applyConfig(cfg *CLIConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.Server.Host != "" {
+		host = cfg.Server.Host
+	}
+	if cfg.Server.Port > 0 {
+		port = cfg.Server.Port
+	}
+
+	if cfg.Security.Password != "" {
+		password = cfg.Security.Password
+	}
+
+	if cfg.TLS.Enabled {
+		tlsFlag = true
+	}
+	if cfg.TLS.SkipVerify {
+		tlsSkipVerify = true
+	}
+}
+
+func parseFlags() {
+	flag.StringVar(&configFile, "config", "", "Config file path (INI format)")
+	flag.StringVar(&host, "host", DefaultHost, "Server hostname or IP address")
+	flag.StringVar(&host, "h", DefaultHost, "Server hostname or IP address (short)")
+	flag.IntVar(&port, "port", DefaultPort, "Server port")
+	flag.IntVar(&port, "p", DefaultPort, "Server port (short)")
+	flag.StringVar(&password, "password", "", "Password for authentication")
+	flag.BoolVar(&tlsFlag, "tls", false, "Use TLS connection")
+	flag.BoolVar(&tlsSkipVerify, "tls-skip-verify", false, "Skip TLS certificate verification")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <command> [args...]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
@@ -32,17 +156,23 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  ROLLBACK            Rollback a transaction\n")
 		fmt.Fprintf(os.Stderr, "  PING                Ping the server\n")
 		fmt.Fprintf(os.Stderr, "  AUTH <password>     Authenticate with server\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s PING\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --host localhost --port 6379 GET mykey\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --config /etc/mini-kv.ini SET key value\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -h 192.168.1.100 -p 6380 GET key\n", os.Args[0])
 	}
-
-	flag.StringVar(&password, "password", "", "Password for authentication")
-	flag.BoolVar(&tlsFlag, "tls", false, "Use TLS connection")
-	flag.BoolVar(&tlsSkipVerify, "tls-skip-verify", false, "Skip TLS certificate verification")
 	flag.Parse()
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load config: %v\n", err)
+	}
+	applyConfig(cfg)
 }
 
 func main() {
-	host := "localhost"
-	port := 6379
+	parseFlags()
 
 	args := flag.Args()
 	i := 0
@@ -52,6 +182,12 @@ func main() {
 			host = args[i+1]
 			i += 2
 		} else if arg == "--port" && i+1 < len(args) {
+			fmt.Sscanf(args[i+1], "%d", &port)
+			i += 2
+		} else if arg == "-h" && i+1 < len(args) {
+			host = args[i+1]
+			i += 2
+		} else if arg == "-p" && i+1 < len(args) {
 			fmt.Sscanf(args[i+1], "%d", &port)
 			i += 2
 		} else {
