@@ -22,7 +22,7 @@ var (
 	GossipPort     = 16379
 	ConsolePort    = "8080"
 	ConsoleEnabled bool
-	ServerHost     = "localhost"
+	ServerHost     = ""
 	ServerPort     = 6379
 	ServerAddr     = ""
 	ConfigFile     = ""
@@ -35,7 +35,7 @@ const (
 	DefaultMaxConns     = 100
 	DefaultReadTimeout  = 30
 	DefaultServerPort   = 6379
-	DefaultServerHost   = "localhost"
+	DefaultServerHost   = ""
 )
 
 type Config struct {
@@ -273,7 +273,11 @@ func GetAddress() string {
 	if ServerAddr != "" {
 		return ServerAddr
 	}
-	return fmt.Sprintf("%s:%d", ServerHost, ServerPort)
+	host := ServerHost
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return fmt.Sprintf("%s:%d", host, ServerPort)
 }
 
 func GetGossipAddress() string {
