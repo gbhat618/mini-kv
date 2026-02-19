@@ -3,7 +3,9 @@ package internal
 import (
 	"bufio"
 	"crypto/tls"
+	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -199,4 +201,44 @@ func (s *Server) ProcessCommand(cmd string, txn *Transaction, inTxn *bool) strin
 
 func (s *Server) GetConnectionCount() int32 {
 	return s.connCount.Load()
+}
+
+type ConsoleServer struct {
+	hub  *Hub
+	mux  *http.ServeMux
+	port string
+}
+
+func NewConsoleServer(port string) *ConsoleServer {
+	s := &ConsoleServer{
+		mux:  http.NewServeMux(),
+		port: port,
+	}
+
+	s.mux.HandleFunc("/ws", s.handleWebSocket)
+	s.mux.Handle("/", ServeUI(0))
+
+	return s
+}
+
+func (s *ConsoleServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if s.hub != nil {
+		s.hub.HandleWebSocket(w, r)
+	}
+}
+
+func (s *ConsoleServer) SetHub(hub *Hub) {
+	s.hub = hub
+}
+
+func (s *ConsoleServer) Start() error {
+	if s.hub != nil {
+		go s.hub.Run()
+	}
+	addr := fmt.Sprintf(":%s", s.port)
+	return http.ListenAndServe(addr, s.mux)
+}
+
+func (s *ConsoleServer) GetHub() *Hub {
+	return s.hub
 }

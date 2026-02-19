@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"mini-kv/internal"
-	"mini-kv/server/console"
 )
 
 func generateNodeID() string {
@@ -45,8 +44,8 @@ func main() {
 	internal.SetLogger(log.New(os.Stdout, "", 0))
 
 	if internal.ConsoleEnabled {
-		hub := console.NewHub(server.GetKV(), server)
-		consoleServer := console.NewServer(internal.ConsolePort)
+		hub := internal.NewHub(server.GetKV(), server)
+		consoleServer := internal.NewConsoleServer(internal.ConsolePort)
 		consoleServer.SetHub(hub)
 
 		go func() {
