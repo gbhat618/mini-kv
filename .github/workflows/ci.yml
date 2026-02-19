@@ -78,7 +78,7 @@ jobs:
 
       - name: Build server
         run: |
-          cd server && go build -o ../mini-kv-server .
+          cd server && go build -o ../mini-kv-server ./cmd/server
 
       - name: Build CLI
         run: |
