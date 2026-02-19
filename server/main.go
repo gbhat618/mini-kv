@@ -2,13 +2,19 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 type LogLevel int
@@ -20,14 +26,36 @@ const (
 	ERROR
 )
 
+const (
+	DefaultMaxKeySize   = 256
+	DefaultMaxValueSize = 1024 * 1024 * 10 // 10MB
+	DefaultMaxConns     = 100
+	DefaultReadTimeout  = 30 * time.Second
+)
+
 var (
-	logLevel  LogLevel
-	logger    *log.Logger
-	logPrefix string
+	logLevel     LogLevel
+	logger       *log.Logger
+	logPrefix    string
+	maxKeySize   int
+	maxValueSize int
+	maxConns     int
+	authPassword string
+	tlsCertFile  string
+	tlsKeyFile   string
+	readTimeout  time.Duration
 )
 
 func init() {
 	flag.StringVar(&logPrefix, "log-level", "info", "Log level: debug, info, warn, error")
+	flag.StringVar(&logPrefix, "l", "info", "Log level (short)")
+	flag.IntVar(&maxKeySize, "max-key-size", DefaultMaxKeySize, "Maximum key size in bytes")
+	flag.IntVar(&maxValueSize, "max-value-size", DefaultMaxValueSize, "Maximum value size in bytes")
+	flag.IntVar(&maxConns, "max-connections", DefaultMaxConns, "Maximum number of concurrent connections")
+	flag.StringVar(&authPassword, "password", "", "Password for authentication (leave empty for no auth)")
+	flag.StringVar(&tlsCertFile, "tls-cert", "", "TLS certificate file (leave empty for no TLS)")
+	flag.StringVar(&tlsKeyFile, "tls-key", "", "TLS key file (leave empty for no TLS)")
+	flag.DurationVar(&readTimeout, "read-timeout", DefaultReadTimeout, "Connection read timeout")
 	logger = log.New(os.Stdout, "", 0)
 }
 
@@ -142,44 +170,102 @@ type Transaction struct {
 }
 
 type Server struct {
-	addr string
-	kv   *MiniKV
+	addr         string
+	kv           *MiniKV
+	tlsConfig    *tls.Config
+	connCount    atomic.Int32
+	shutdownChan chan struct{}
 }
 
 func NewServer(addr string) *Server {
-	return &Server{addr: addr, kv: NewMiniKV()}
+	return &Server{
+		addr:         addr,
+		kv:           NewMiniKV(),
+		shutdownChan: make(chan struct{}),
+	}
+}
+
+func (s *Server) SetTLSConfig(cfg *tls.Config) {
+	s.tlsConfig = cfg
 }
 
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
+	var ln net.Listener
+	var err error
+
+	if s.tlsConfig != nil {
+		ln, err = tls.Listen("tcp", s.addr, s.tlsConfig)
+		if err != nil {
+			return err
+		}
+		info("Mini-KV Server started on %s with TLS (log level: %s)", s.addr, strings.ToUpper(logPrefix))
+	} else {
+		ln, err = net.Listen("tcp", s.addr)
+		if err != nil {
+			return err
+		}
+		info("Mini-KV Server started on %s (log level: %s)", s.addr, strings.ToUpper(logPrefix))
 	}
-	info("Mini-KV Server started on %s (log level: %s)", s.addr, strings.ToUpper(logPrefix))
+
+	if authPassword != "" {
+		info("Authentication enabled")
+	}
+	if s.tlsConfig != nil {
+		info("TLS enabled")
+	}
+	info("Max connections: %d, Max key size: %d, Max value size: %d", maxConns, maxKeySize, maxValueSize)
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalChan
+		logError("Shutdown signal received")
+		close(s.shutdownChan)
+		ln.Close()
+	}()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			logError("Accept error: %v", err)
+			select {
+			case <-s.shutdownChan:
+				return nil
+			default:
+				logError("Accept error: %v", err)
+				continue
+			}
+		}
+
+		if s.connCount.Load() >= int32(maxConns) {
+			logError("Connection limit reached, rejecting connection from %s", conn.RemoteAddr())
+			conn.Close()
 			continue
 		}
-		debug("Accepted connection from %s", conn.RemoteAddr())
+
+		s.connCount.Add(1)
+		debug("Accepted connection from %s (active: %d)", conn.RemoteAddr(), s.connCount.Load())
 		go s.handleConn(conn)
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
+	defer func() {
+		s.connCount.Add(-1)
+		conn.Close()
+		debug("Connection closed from %s", conn.RemoteAddr())
+	}()
+
+	if readTimeout > 0 {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+	}
+
 	reader := bufio.NewReader(conn)
 	txn := &Transaction{
 		pending: make(map[string]string),
 		deleted: make(map[string]bool),
 	}
 	inTxn := false
-
-	defer func() {
-		conn.Close()
-		debug("Connection closed from %s", conn.RemoteAddr())
-	}()
+	authenticated := authPassword == ""
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -191,9 +277,35 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 		debug("Received command: %q", line)
+
+		if !authenticated {
+			response := s.processAuth(line)
+			conn.Write([]byte(response))
+			continue
+		}
+
 		response := s.processCommand(line, txn, &inTxn)
 		conn.Write([]byte(response))
+
+		if readTimeout > 0 {
+			conn.SetReadDeadline(time.Now().Add(readTimeout))
+		}
 	}
+}
+
+func (s *Server) processAuth(cmd string) string {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 || strings.ToUpper(parts[0]) != "AUTH" {
+		return "-ERR authentication required\r\n"
+	}
+
+	inputPassword := parts[1]
+	if subtle.ConstantTimeCompare([]byte(authPassword), []byte(inputPassword)) == 1 {
+		return "+OK\r\n"
+	}
+
+	logError("Failed authentication attempt")
+	return "-ERR invalid password\r\n"
 }
 
 func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) string {
@@ -258,6 +370,16 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 		}
 		key := parts[1]
 		value := strings.Join(parts[2:], " ")
+
+		if len(key) > maxKeySize {
+			warn("SET: key size %d exceeds maximum %d", len(key), maxKeySize)
+			return fmt.Sprintf("-ERR key size exceeds maximum of %d bytes\r\n", maxKeySize)
+		}
+		if len(value) > maxValueSize {
+			warn("SET: value size %d exceeds maximum %d", len(value), maxValueSize)
+			return fmt.Sprintf("-ERR value size exceeds maximum of %d bytes\r\n", maxValueSize)
+		}
+
 		if *inTxn {
 			txn.deleted[key] = false
 			txn.pending[key] = value
@@ -357,6 +479,10 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 		debug("PING")
 		return "+PONG\r\n"
 
+	case "AUTH":
+		warn("AUTH: already authenticated")
+		return "-ERR already authenticated\r\n"
+
 	default:
 		warn("Unknown command: %s", cmdUpper)
 		return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmdUpper)
@@ -365,8 +491,28 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 
 func main() {
 	parseFlags()
+
 	addr := ":6379"
+	flag.Parse()
+	args := flag.Args()
+	if len(args) > 0 {
+		addr = args[0]
+	}
+
 	server := NewServer(addr)
+
+	if tlsCertFile != "" && tlsKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+		if err != nil {
+			log.Fatalf("Failed to load TLS certificate: %v", err)
+		}
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		server.SetTLSConfig(tlsConfig)
+	}
+
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}

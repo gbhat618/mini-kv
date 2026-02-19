@@ -17,11 +17,15 @@ linters:
     - unconvert
     - unparam
     - gocritic
+    - gosec
 
 linters-settings:
   errcheck:
     check-type-assertions: true
     check-blank: true
+  gosec:
+    excludes:
+      - G104 # gosec ignores unused errors
 
 issues:
   exclude-rules:

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -353,6 +356,124 @@ func TestTransactionFlushDBBlocked(t *testing.T) {
 	resp := s.processCommand("FLUSHDB", txn, &inTxn)
 	if !contains(resp, "cannot FLUSHDB within a transaction") {
 		t.Errorf("Expected error for FLUSHDB in txn, got %s", resp)
+	}
+}
+
+func TestMaxValueSizeValidation(t *testing.T) {
+	s := NewServer(":6379")
+
+	origMaxValue := maxValueSize
+	maxValueSize = 10
+	defer func() { maxValueSize = origMaxValue }()
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("SET key verylongvalue", txn, &inTxn)
+	if !strings.Contains(resp, "value size exceeds maximum") {
+		t.Errorf("Expected value size error, got: %s", resp)
+	}
+
+	resp = s.processCommand("SET key short", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("Expected OK for valid value, got: %s", resp)
+	}
+}
+
+func TestConnectionLimit(t *testing.T) {
+	origMaxConns := maxConns
+	maxConns = 2
+	defer func() { maxConns = origMaxConns }()
+
+	origAuth := authPassword
+	authPassword = ""
+	defer func() { authPassword = origAuth }()
+
+	server := NewServer(":0")
+
+	var connCount int32
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := net.Dial("tcp", server.addr)
+			if err == nil {
+				atomic.AddInt32(&connCount, 1)
+				conn.Close()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if atomic.LoadInt32(&connCount) > int32(maxConns) {
+		t.Errorf("Expected connection count to be limited to %d, got %d", maxConns, connCount)
+	}
+}
+
+func TestAllCommands(t *testing.T) {
+	s := NewServer(":6379")
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("SET key1 value1", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("SET failed: %s", resp)
+	}
+
+	resp = s.processCommand("GET key1", txn, &inTxn)
+	if !strings.Contains(resp, "value1") {
+		t.Errorf("GET failed: %s", resp)
+	}
+
+	resp = s.processCommand("KEYS", txn, &inTxn)
+	if !strings.Contains(resp, "key1") {
+		t.Errorf("KEYS failed: %s", resp)
+	}
+
+	resp = s.processCommand("DEL key1", txn, &inTxn)
+	if !strings.Contains(resp, "1") {
+		t.Errorf("DEL failed: %s", resp)
+	}
+
+	resp = s.processCommand("PING", txn, &inTxn)
+	if !strings.Contains(resp, "PONG") {
+		t.Errorf("PING failed: %s", resp)
+	}
+}
+
+func TestTransactionWithCommands(t *testing.T) {
+	s := NewServer(":6379")
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	s.processCommand("SET initial value", txn, &inTxn)
+
+	resp := s.processCommand("BEGIN", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("BEGIN failed: %s", resp)
+	}
+
+	resp = s.processCommand("SET key1 val1", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("SET in txn failed: %s", resp)
+	}
+
+	resp = s.processCommand("GET key1", txn, &inTxn)
+	if !strings.Contains(resp, "val1") {
+		t.Errorf("GET in txn failed: %s", resp)
+	}
+
+	resp = s.processCommand("COMMIT", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("COMMIT failed: %s", resp)
+	}
+
+	resp = s.processCommand("GET key1", txn, &inTxn)
+	if !strings.Contains(resp, "val1") {
+		t.Errorf("GET after commit failed: %s", resp)
 	}
 }
 
