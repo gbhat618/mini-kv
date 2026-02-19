@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"encoding/json"
@@ -157,7 +157,7 @@ func TestTransactionBeginCommit(t *testing.T) {
 	}
 	inTxn := false
 
-	resp := s.processCommand("BEGIN", txn, &inTxn)
+	resp := s.ProcessCommand("BEGIN", txn, &inTxn)
 	if resp != "+OK\r\n" {
 		t.Errorf("Expected OK, got %s", resp)
 	}
@@ -165,12 +165,12 @@ func TestTransactionBeginCommit(t *testing.T) {
 		t.Error("Expected inTxn to be true")
 	}
 
-	resp = s.processCommand("SET key1 modified", txn, &inTxn)
+	resp = s.ProcessCommand("SET key1 modified", txn, &inTxn)
 	if resp != "+OK\r\n" {
 		t.Errorf("Expected OK, got %s", resp)
 	}
 
-	resp = s.processCommand("GET key1", txn, &inTxn)
+	resp = s.ProcessCommand("GET key1", txn, &inTxn)
 	if !contains(resp, "modified") {
 		t.Errorf("Expected modified, got %s", resp)
 	}
@@ -180,7 +180,7 @@ func TestTransactionBeginCommit(t *testing.T) {
 		t.Errorf("Expected original (not visible outside txn), got %s", val)
 	}
 
-	resp = s.processCommand("COMMIT", txn, &inTxn)
+	resp = s.ProcessCommand("COMMIT", txn, &inTxn)
 	if resp != "+OK\r\n" {
 		t.Errorf("Expected OK, got %s", resp)
 	}
@@ -203,10 +203,10 @@ func TestTransactionRollback(t *testing.T) {
 	}
 	inTxn := false
 
-	s.processCommand("BEGIN", txn, &inTxn)
-	s.processCommand("SET key1 modified", txn, &inTxn)
+	s.ProcessCommand("BEGIN", txn, &inTxn)
+	s.ProcessCommand("SET key1 modified", txn, &inTxn)
 
-	resp := s.processCommand("ROLLBACK", txn, &inTxn)
+	resp := s.ProcessCommand("ROLLBACK", txn, &inTxn)
 	if resp != "+OK\r\n" {
 		t.Errorf("Expected OK, got %s", resp)
 	}
@@ -227,13 +227,13 @@ func TestTransactionMultipleKeys(t *testing.T) {
 	}
 	inTxn := false
 
-	s.processCommand("BEGIN", txn, &inTxn)
-	s.processCommand("SET key1 val1", txn, &inTxn)
-	s.processCommand("SET key2 val2", txn, &inTxn)
-	s.processCommand("SET key3 val3", txn, &inTxn)
-	s.processCommand("DEL key2", txn, &inTxn)
+	s.ProcessCommand("BEGIN", txn, &inTxn)
+	s.ProcessCommand("SET key1 val1", txn, &inTxn)
+	s.ProcessCommand("SET key2 val2", txn, &inTxn)
+	s.ProcessCommand("SET key3 val3", txn, &inTxn)
+	s.ProcessCommand("DEL key2", txn, &inTxn)
 
-	_ = s.processCommand("COMMIT", txn, &inTxn)
+	_ = s.ProcessCommand("COMMIT", txn, &inTxn)
 
 	keys := kv.Keys()
 	if len(keys) != 2 {
@@ -266,10 +266,10 @@ func TestTransactionIsolation(t *testing.T) {
 	}
 	inTxn := false
 
-	s.processCommand("BEGIN", txn, &inTxn)
-	s.processCommand("SET key1 modified", txn, &inTxn)
+	s.ProcessCommand("BEGIN", txn, &inTxn)
+	s.ProcessCommand("SET key1 modified", txn, &inTxn)
 
-	resp := s.processCommand("GET key1", txn, &inTxn)
+	resp := s.ProcessCommand("GET key1", txn, &inTxn)
 	if !contains(resp, "modified") {
 		t.Errorf("Expected modified in transaction, got %s", resp)
 	}
@@ -279,7 +279,7 @@ func TestTransactionIsolation(t *testing.T) {
 		t.Errorf("Expected original in main store (isolation), got %s", val)
 	}
 
-	s.processCommand("COMMIT", txn, &inTxn)
+	s.ProcessCommand("COMMIT", txn, &inTxn)
 
 	val, _ = kv.Get("key1")
 	if val != "modified" {
@@ -296,7 +296,7 @@ func TestTransactionNested(t *testing.T) {
 	}
 	inTxn := true
 
-	resp := s.processCommand("BEGIN", txn, &inTxn)
+	resp := s.ProcessCommand("BEGIN", txn, &inTxn)
 	if !contains(resp, "transaction already in progress") {
 		t.Errorf("Expected error for nested BEGIN, got %s", resp)
 	}
@@ -312,11 +312,11 @@ func TestTransactionNoCommit(t *testing.T) {
 	}
 	inTxn := false
 
-	s.processCommand("BEGIN", txn, &inTxn)
-	s.processCommand("SET key1 value1", txn, &inTxn)
+	s.ProcessCommand("BEGIN", txn, &inTxn)
+	s.ProcessCommand("SET key1 value1", txn, &inTxn)
 
-	_ = s.processCommand("COMMIT", txn, &inTxn)
-	s.processCommand("GET key1", txn, &inTxn)
+	_ = s.ProcessCommand("COMMIT", txn, &inTxn)
+	s.ProcessCommand("GET key1", txn, &inTxn)
 
 	val, _ := kv.Get("key1")
 	if val != "value1" {
@@ -333,12 +333,12 @@ func TestTransactionRollbackWithoutBegin(t *testing.T) {
 	}
 	inTxn := false
 
-	resp := s.processCommand("COMMIT", txn, &inTxn)
+	resp := s.ProcessCommand("COMMIT", txn, &inTxn)
 	if !contains(resp, "no transaction in progress") {
 		t.Errorf("Expected error for COMMIT without BEGIN, got %s", resp)
 	}
 
-	resp = s.processCommand("ROLLBACK", txn, &inTxn)
+	resp = s.ProcessCommand("ROLLBACK", txn, &inTxn)
 	if !contains(resp, "no transaction in progress") {
 		t.Errorf("Expected error for ROLLBACK without BEGIN, got %s", resp)
 	}
@@ -353,9 +353,9 @@ func TestTransactionFlushDBBlocked(t *testing.T) {
 	}
 	inTxn := false
 
-	s.processCommand("BEGIN", txn, &inTxn)
+	s.ProcessCommand("BEGIN", txn, &inTxn)
 
-	resp := s.processCommand("FLUSHDB", txn, &inTxn)
+	resp := s.ProcessCommand("FLUSHDB", txn, &inTxn)
 	if !contains(resp, "cannot FLUSHDB within a transaction") {
 		t.Errorf("Expected error for FLUSHDB in txn, got %s", resp)
 	}
@@ -364,32 +364,32 @@ func TestTransactionFlushDBBlocked(t *testing.T) {
 func TestMaxValueSizeValidation(t *testing.T) {
 	s := NewServer(":6379", ":16379")
 
-	origMaxValue := maxValueSize
-	maxValueSize = 10
-	defer func() { maxValueSize = origMaxValue }()
+	origMaxValue := MaxValueSize
+	MaxValueSize = 10
+	defer func() { MaxValueSize = origMaxValue }()
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("SET key verylongvalue", txn, &inTxn)
+	resp := s.ProcessCommand("SET key verylongvalue", txn, &inTxn)
 	if !strings.Contains(resp, "value size exceeds maximum") {
 		t.Errorf("Expected value size error, got: %s", resp)
 	}
 
-	resp = s.processCommand("SET key short", txn, &inTxn)
+	resp = s.ProcessCommand("SET key short", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("Expected OK for valid value, got: %s", resp)
 	}
 }
 
 func TestConnectionLimit(t *testing.T) {
-	origMaxConns := maxConns
-	maxConns = 2
-	defer func() { maxConns = origMaxConns }()
+	origMaxConns := MaxConns
+	MaxConns = 2
+	defer func() { MaxConns = origMaxConns }()
 
-	origAuth := authPassword
-	authPassword = ""
-	defer func() { authPassword = origAuth }()
+	origAuth := AuthPassword
+	AuthPassword = ""
+	defer func() { AuthPassword = origAuth }()
 
 	server := NewServer(":0", ":0")
 
@@ -410,8 +410,8 @@ func TestConnectionLimit(t *testing.T) {
 
 	wg.Wait()
 
-	if atomic.LoadInt32(&connCount) > int32(maxConns) {
-		t.Errorf("Expected connection count to be limited to %d, got %d", maxConns, connCount)
+	if atomic.LoadInt32(&connCount) > int32(MaxConns) {
+		t.Errorf("Expected connection count to be limited to %d, got %d", MaxConns, connCount)
 	}
 }
 
@@ -420,27 +420,27 @@ func TestAllCommands(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("SET key1 value1", txn, &inTxn)
+	resp := s.ProcessCommand("SET key1 value1", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("SET failed: %s", resp)
 	}
 
-	resp = s.processCommand("GET key1", txn, &inTxn)
+	resp = s.ProcessCommand("GET key1", txn, &inTxn)
 	if !strings.Contains(resp, "value1") {
 		t.Errorf("GET failed: %s", resp)
 	}
 
-	resp = s.processCommand("KEYS", txn, &inTxn)
+	resp = s.ProcessCommand("KEYS", txn, &inTxn)
 	if !strings.Contains(resp, "key1") {
 		t.Errorf("KEYS failed: %s", resp)
 	}
 
-	resp = s.processCommand("DEL key1", txn, &inTxn)
+	resp = s.ProcessCommand("DEL key1", txn, &inTxn)
 	if !strings.Contains(resp, "1") {
 		t.Errorf("DEL failed: %s", resp)
 	}
 
-	resp = s.processCommand("PING", txn, &inTxn)
+	resp = s.ProcessCommand("PING", txn, &inTxn)
 	if !strings.Contains(resp, "PONG") {
 		t.Errorf("PING failed: %s", resp)
 	}
@@ -451,29 +451,29 @@ func TestTransactionWithCommands(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	s.processCommand("SET initial value", txn, &inTxn)
+	s.ProcessCommand("SET initial value", txn, &inTxn)
 
-	resp := s.processCommand("BEGIN", txn, &inTxn)
+	resp := s.ProcessCommand("BEGIN", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("BEGIN failed: %s", resp)
 	}
 
-	resp = s.processCommand("SET key1 val1", txn, &inTxn)
+	resp = s.ProcessCommand("SET key1 val1", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("SET in txn failed: %s", resp)
 	}
 
-	resp = s.processCommand("GET key1", txn, &inTxn)
+	resp = s.ProcessCommand("GET key1", txn, &inTxn)
 	if !strings.Contains(resp, "val1") {
 		t.Errorf("GET in txn failed: %s", resp)
 	}
 
-	resp = s.processCommand("COMMIT", txn, &inTxn)
+	resp = s.ProcessCommand("COMMIT", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("COMMIT failed: %s", resp)
 	}
 
-	resp = s.processCommand("GET key1", txn, &inTxn)
+	resp = s.ProcessCommand("GET key1", txn, &inTxn)
 	if !strings.Contains(resp, "val1") {
 		t.Errorf("GET after commit failed: %s", resp)
 	}
@@ -523,9 +523,9 @@ func TestConsistentHash(t *testing.T) {
 }
 
 func TestClusterInfo(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -536,16 +536,16 @@ func TestClusterInfo(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("CLUSTER INFO", txn, &inTxn)
+	resp := s.ProcessCommand("CLUSTER INFO", txn, &inTxn)
 	if !strings.Contains(resp, "cluster_enabled: true") {
 		t.Errorf("Expected cluster enabled, got: %s", resp)
 	}
 }
 
 func TestClusterMembers(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -556,16 +556,16 @@ func TestClusterMembers(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("CLUSTER MEMBERS", txn, &inTxn)
+	resp := s.ProcessCommand("CLUSTER MEMBERS", txn, &inTxn)
 	if !strings.Contains(resp, "node1") || !strings.Contains(resp, "node2") || !strings.Contains(resp, "node3") {
 		t.Errorf("Expected all nodes in MEMBERS response, got: %s", resp)
 	}
 }
 
 func TestClusterKeyDistribution(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -596,16 +596,16 @@ func TestClusterKeyDistribution(t *testing.T) {
 }
 
 func TestClusterInfoWithoutClusterMode(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = false
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = false
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("CLUSTER INFO", txn, &inTxn)
+	resp := s.ProcessCommand("CLUSTER INFO", txn, &inTxn)
 	if !strings.Contains(resp, "cluster mode not enabled") {
 		t.Errorf("Expected cluster not enabled error, got: %s", resp)
 	}
@@ -616,7 +616,7 @@ func TestServerInfo(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("INFO", txn, &inTxn)
+	resp := s.ProcessCommand("INFO", txn, &inTxn)
 	if !strings.Contains(resp, "mini-kv server") {
 		t.Errorf("Expected server info, got: %s", resp)
 	}
@@ -662,25 +662,25 @@ func TestReplicationStateAddSlave(t *testing.T) {
 }
 
 func TestRoleCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("ROLE", txn, &inTxn)
+	resp := s.ProcessCommand("ROLE", txn, &inTxn)
 	if !strings.Contains(resp, "role: master") {
 		t.Errorf("Expected role master, got: %s", resp)
 	}
 }
 
 func TestReplicationInfoCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -690,7 +690,7 @@ func TestReplicationInfoCommand(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("INFO REPLICATION", txn, &inTxn)
+	resp := s.ProcessCommand("INFO REPLICATION", txn, &inTxn)
 	if !strings.Contains(resp, "role: master") {
 		t.Errorf("Expected role master in replication info, got: %s", resp)
 	}
@@ -700,16 +700,16 @@ func TestReplicationInfoCommand(t *testing.T) {
 }
 
 func TestReplicaOfCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("REPLICAOF localhost 6379", txn, &inTxn)
+	resp := s.ProcessCommand("REPLICAOF localhost 6379", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("Expected OK for replicaof, got: %s", resp)
 	}
@@ -721,7 +721,7 @@ func TestReplicaOfCommand(t *testing.T) {
 		t.Errorf("Expected master addr, got %s", s.cluster.replication.GetMasterAddr())
 	}
 
-	resp = s.processCommand("REPLICAOF NO ONE", txn, &inTxn)
+	resp = s.ProcessCommand("REPLICAOF NO ONE", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("Expected OK for replicaof no one, got: %s", resp)
 	}
@@ -732,9 +732,9 @@ func TestReplicaOfCommand(t *testing.T) {
 }
 
 func TestSyncCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -744,16 +744,16 @@ func TestSyncCommand(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("SYNC", txn, &inTxn)
+	resp := s.ProcessCommand("SYNC", txn, &inTxn)
 	if !strings.Contains(resp, "key1") || !strings.Contains(resp, "key2") {
 		t.Errorf("Expected sync data, got: %s", resp)
 	}
 }
 
 func TestReplicaWriteCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
@@ -765,7 +765,7 @@ func TestReplicaWriteCommand(t *testing.T) {
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand(fmt.Sprintf("REPLICA_WRITE %s", dataJSON), txn, &inTxn)
+	resp := s.ProcessCommand(fmt.Sprintf("REPLICA_WRITE %s", dataJSON), txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("Expected OK for replica write, got: %s", resp)
 	}
@@ -777,16 +777,16 @@ func TestReplicaWriteCommand(t *testing.T) {
 }
 
 func TestClusterAddSlaveCommand(t *testing.T) {
-	origClusterMode := clusterMode
-	clusterMode = true
-	defer func() { clusterMode = origClusterMode }()
+	origClusterMode := ClusterMode
+	ClusterMode = true
+	defer func() { ClusterMode = origClusterMode }()
 
 	s := NewServer(":6379", ":16379")
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
 
-	resp := s.processCommand("CLUSTER ADDSLAVE localhost:6380", txn, &inTxn)
+	resp := s.ProcessCommand("CLUSTER ADDSLAVE localhost:6380", txn, &inTxn)
 	if !strings.Contains(resp, "OK") {
 		t.Errorf("Expected OK for addslave, got: %s", resp)
 	}
