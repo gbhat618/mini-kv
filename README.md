@@ -34,6 +34,75 @@ mini-kv/
 
 Transactions provide isolation: changes within a transaction are not visible to other clients until committed.
 
+## Security Features
+
+### Authentication
+```bash
+./bin/server -password "yourpassword"
+./bin/cli --password "yourpassword" GET key
+```
+
+### TLS/SSL
+```bash
+./bin/server -tls-cert cert.pem -tls-key key.pem
+./bin/cli --tls GET key
+```
+
+### Configuration Options
+- `-max-key-size` - Maximum key size (default: 256 bytes)
+- `-max-value-size` - Maximum value size (default: 10MB)
+- `-max-connections` - Maximum concurrent connections (default: 100)
+- `-read-timeout` - Connection read timeout (default: 30s)
+
+## Clustering
+
+### Starting a Cluster
+```bash
+# Start node 1
+./bin/server -cluster -node-id node1 -peers localhost:16380,localhost:16381
+
+# Start node 2  
+./bin/server -cluster -node-id node2 -peers localhost:16379,localhost:16381
+
+# Start node 3
+./bin/server -cluster -node-id node3 -peers localhost:16379,localhost:16380
+```
+
+### Cluster Commands
+- `CLUSTER INFO` - Show cluster information
+- `CLUSTER MEMBERS` - List all cluster members
+- `CLUSTER JOIN <peer>` - Join a peer node
+- `CLUSTER ADDSLAVE <addr>` - Add a slave node
+
+### Cluster Options
+- `-cluster` - Enable clustering mode
+- `-peers` - Comma-separated list of peer addresses
+- `-node-id` - Unique node ID (auto-generated if not provided)
+- `-gossip-port` - Port for inter-node gossip (default: 16379)
+
+## Replication & Failover
+
+### Setting Up Replication
+```bash
+# On master server
+./bin/server -cluster
+
+# On slave server
+./bin/server -cluster
+./bin/cli REPLICAOF master_host 6379
+```
+
+### Replication Commands
+- `REPLICAOF <host> <port>` - Set master server (use `REPLICAOF NO ONE` to promote to master)
+- `ROLE` - Show server role (master/slave)
+- `INFO REPLICATION` - Show replication status
+- `SYNC` - Get all data for initial sync (used by slaves)
+
+### Failover
+- Automatic health checking of master node
+- Automatic failover when master becomes unreachable
+- Slave promotion to master on failover
+
 ## Running
 
 ### Build and Test
@@ -51,6 +120,11 @@ docker compose up mini-kv-server
 ```bash
 docker compose run mini-kv-cli ./cli --host mini-kv-server --port 6379 SET key value
 docker compose run mini-kv-cli ./cli --host mini-kv-server --port 6379 GET key
+```
+
+### Build from Source
+```bash
+make build
 ```
 
 ## Performance Benchmarks
@@ -85,9 +159,3 @@ go test -v ./...
 go test -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out
 ```
-
-The project is ready for adding distributed systems capabilities:
-- Transaction support
-- Replication
-- Recovery
-- Clustering

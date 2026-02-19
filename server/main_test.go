@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -548,9 +549,9 @@ func TestClusterMembers(t *testing.T) {
 
 	s := NewServer(":6379", ":16379")
 
-	s.cluster.AddNode("node1", "localhost:6379")
-	s.cluster.AddNode("node2", "localhost:6380")
-	s.cluster.AddNode("node3", "localhost:6381")
+	s.cluster.AddNode("node1", "localhost:6379", RoleMaster)
+	s.cluster.AddNode("node2", "localhost:6380", RoleMaster)
+	s.cluster.AddNode("node3", "localhost:6381", RoleMaster)
 
 	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
 	inTxn := false
@@ -568,9 +569,9 @@ func TestClusterKeyDistribution(t *testing.T) {
 
 	s := NewServer(":6379", ":16379")
 
-	s.cluster.AddNode("node1", "localhost:6379")
-	s.cluster.AddNode("node2", "localhost:6380")
-	s.cluster.AddNode("node3", "localhost:6381")
+	s.cluster.AddNode("node1", "localhost:6379", RoleMaster)
+	s.cluster.AddNode("node2", "localhost:6380", RoleMaster)
+	s.cluster.AddNode("node3", "localhost:6381", RoleMaster)
 
 	testKeys := []string{}
 	for i := 0; i < 50; i++ {
@@ -618,6 +619,219 @@ func TestServerInfo(t *testing.T) {
 	resp := s.processCommand("INFO", txn, &inTxn)
 	if !strings.Contains(resp, "mini-kv server") {
 		t.Errorf("Expected server info, got: %s", resp)
+	}
+}
+
+func TestReplicationState(t *testing.T) {
+	rs := NewReplicationState()
+
+	if rs.GetRole() != RoleMaster {
+		t.Errorf("Expected default role to be master, got %s", rs.GetRole())
+	}
+
+	rs.SetMaster("localhost:6379")
+	if rs.GetRole() != RoleSlave {
+		t.Errorf("Expected role to be slave, got %s", rs.GetRole())
+	}
+	if rs.GetMasterAddr() != "localhost:6379" {
+		t.Errorf("Expected master addr to be localhost:6379, got %s", rs.GetMasterAddr())
+	}
+
+	rs.SetMaster("")
+	if rs.GetRole() != RoleMaster {
+		t.Errorf("Expected role to be master after SetMaster(\"\"), got %s", rs.GetRole())
+	}
+}
+
+func TestReplicationStateAddSlave(t *testing.T) {
+	rs := NewReplicationState()
+
+	rs.AddSlave("localhost:6380")
+	rs.AddSlave("localhost:6381")
+
+	slaves := rs.GetSlaveAddrs()
+	if len(slaves) != 2 {
+		t.Errorf("Expected 2 slaves, got %d", len(slaves))
+	}
+
+	rs.RemoveSlave("localhost:6380")
+	slaves = rs.GetSlaveAddrs()
+	if len(slaves) != 1 {
+		t.Errorf("Expected 1 slave after removal, got %d", len(slaves))
+	}
+}
+
+func TestRoleCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("ROLE", txn, &inTxn)
+	if !strings.Contains(resp, "role: master") {
+		t.Errorf("Expected role master, got: %s", resp)
+	}
+}
+
+func TestReplicationInfoCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	s.cluster.replication.AddSlave("localhost:6380")
+	s.cluster.replication.AddSlave("localhost:6381")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("INFO REPLICATION", txn, &inTxn)
+	if !strings.Contains(resp, "role: master") {
+		t.Errorf("Expected role master in replication info, got: %s", resp)
+	}
+	if !strings.Contains(resp, "connected_slaves: 2") {
+		t.Errorf("Expected 2 connected slaves, got: %s", resp)
+	}
+}
+
+func TestReplicaOfCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("REPLICAOF localhost 6379", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("Expected OK for replicaof, got: %s", resp)
+	}
+
+	if s.cluster.replication.GetRole() != RoleSlave {
+		t.Errorf("Expected role to be slave, got %s", s.cluster.replication.GetRole())
+	}
+	if s.cluster.replication.GetMasterAddr() != "localhost:6379" {
+		t.Errorf("Expected master addr, got %s", s.cluster.replication.GetMasterAddr())
+	}
+
+	resp = s.processCommand("REPLICAOF NO ONE", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("Expected OK for replicaof no one, got: %s", resp)
+	}
+
+	if s.cluster.replication.GetRole() != RoleMaster {
+		t.Errorf("Expected role to be master after NO ONE, got %s", s.cluster.replication.GetRole())
+	}
+}
+
+func TestSyncCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	s.kv.Set("key1", "value1")
+	s.kv.Set("key2", "value2")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("SYNC", txn, &inTxn)
+	if !strings.Contains(resp, "key1") || !strings.Contains(resp, "key2") {
+		t.Errorf("Expected sync data, got: %s", resp)
+	}
+}
+
+func TestReplicaWriteCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	s.cluster.replication.SetMaster("localhost:6379")
+
+	data := map[string]string{"key1": "value1", "key2": "value2"}
+	dataJSON, _ := json.Marshal(data)
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand(fmt.Sprintf("REPLICA_WRITE %s", dataJSON), txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("Expected OK for replica write, got: %s", resp)
+	}
+
+	val, ok := s.kv.Get("key1")
+	if !ok || val != "value1" {
+		t.Errorf("Expected key1 to be set from replica write")
+	}
+}
+
+func TestClusterAddSlaveCommand(t *testing.T) {
+	origClusterMode := clusterMode
+	clusterMode = true
+	defer func() { clusterMode = origClusterMode }()
+
+	s := NewServer(":6379", ":16379")
+
+	txn := &Transaction{pending: make(map[string]string), deleted: make(map[string]bool)}
+	inTxn := false
+
+	resp := s.processCommand("CLUSTER ADDSLAVE localhost:6380", txn, &inTxn)
+	if !strings.Contains(resp, "OK") {
+		t.Errorf("Expected OK for addslave, got: %s", resp)
+	}
+
+	slaves := s.cluster.replication.GetSlaveAddrs()
+	if len(slaves) != 1 || slaves[0] != "localhost:6380" {
+		t.Errorf("Expected slave localhost:6380, got %v", slaves)
+	}
+}
+
+func TestKVGetAll(t *testing.T) {
+	kv := NewMiniKV()
+
+	kv.Set("key1", "value1")
+	kv.Set("key2", "value2")
+	kv.Set("key3", "value3")
+
+	all := kv.GetAll()
+	if len(all) != 3 {
+		t.Errorf("Expected 3 keys, got %d", len(all))
+	}
+
+	if all["key1"] != "value1" || all["key2"] != "value2" || all["key3"] != "value3" {
+		t.Errorf("GetAll returned unexpected data")
+	}
+}
+
+func TestKVSetFromMap(t *testing.T) {
+	kv := NewMiniKV()
+
+	data := map[string]string{
+		"a": "1",
+		"b": "2",
+		"c": "3",
+	}
+	kv.SetFromMap(data)
+
+	if v, _ := kv.Get("a"); v != "1" {
+		t.Errorf("SetFromMap did not set value for 'a' correctly, got %s", v)
+	}
+	if v, _ := kv.Get("b"); v != "2" {
+		t.Errorf("SetFromMap did not set value for 'b' correctly, got %s", v)
+	}
+	if v, _ := kv.Get("c"); v != "3" {
+		t.Errorf("SetFromMap did not set value for 'c' correctly, got %s", v)
 	}
 }
 

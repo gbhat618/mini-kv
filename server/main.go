@@ -37,6 +37,9 @@ const (
 	HashReplicas        = 150
 	GossipInterval      = 1 * time.Second
 	GossipTimeout       = 5 * time.Second
+	HeartbeatInterval   = 1 * time.Second
+	HealthCheckInterval = 2 * time.Second
+	FailoverTimeout     = 10 * time.Second
 )
 
 var (
@@ -178,26 +181,142 @@ func (kv *MiniKV) FlushDB() {
 	info("FLUSHDB deleted %d keys", count)
 }
 
+func (kv *MiniKV) GetAll() map[string]string {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+	result := make(map[string]string)
+	for k, v := range kv.store {
+		result[k] = v
+	}
+	return result
+}
+
+func (kv *MiniKV) SetFromMap(data map[string]string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	for k, v := range data {
+		kv.store[k] = v
+	}
+}
+
 type Transaction struct {
 	pending map[string]string
 	deleted map[string]bool
+}
+
+type NodeRole int
+
+const (
+	RoleUnknown NodeRole = iota
+	RoleMaster
+	RoleSlave
+)
+
+type ReplicationState struct {
+	mu            sync.RWMutex
+	role          NodeRole
+	masterAddr    string
+	slaveAddrs    []string
+	replOffset    int64
+	lastSyncTime  time.Time
+	isReplicating bool
+}
+
+func NewReplicationState() *ReplicationState {
+	return &ReplicationState{
+		role:       RoleMaster,
+		masterAddr: "",
+		slaveAddrs: make([]string, 0),
+		replOffset: 0,
+	}
+}
+
+func (rs *ReplicationState) GetRole() NodeRole {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	return rs.role
+}
+
+func (rs *ReplicationState) SetMaster(addr string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if addr == "" {
+		rs.role = RoleMaster
+		rs.masterAddr = ""
+	} else {
+		rs.role = RoleSlave
+		rs.masterAddr = addr
+	}
+	info("Replication: Set role to %s, master: %s", rs.role.String(), addr)
+}
+
+func (rs *ReplicationState) AddSlave(addr string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	for _, s := range rs.slaveAddrs {
+		if s == addr {
+			return
+		}
+	}
+	rs.slaveAddrs = append(rs.slaveAddrs, addr)
+	info("Replication: Added slave %s", addr)
+}
+
+func (rs *ReplicationState) RemoveSlave(addr string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	for i, s := range rs.slaveAddrs {
+		if s == addr {
+			rs.slaveAddrs = append(rs.slaveAddrs[:i], rs.slaveAddrs[i+1:]...)
+			info("Replication: Removed slave %s", addr)
+			break
+		}
+	}
+}
+
+func (rs *ReplicationState) GetSlaveAddrs() []string {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	return rs.slaveAddrs
+}
+
+func (rs *ReplicationState) GetMasterAddr() string {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	return rs.masterAddr
+}
+
+func (r NodeRole) String() string {
+	switch r {
+	case RoleMaster:
+		return "master"
+	case RoleSlave:
+		return "slave"
+	default:
+		return "unknown"
+	}
 }
 
 type NodeInfo struct {
 	ID        string
 	Addr      string
 	Timestamp int64
+	Role      NodeRole
+	Health    bool
 }
 
 type Cluster struct {
-	mu           sync.RWMutex
-	nodes        map[string]*NodeInfo
-	hashRing     *ConsistentHash
-	nodeID       string
-	selfAddr     string
-	gossipAddr   string
-	gossipTicker *time.Ticker
-	shutdownChan chan struct{}
+	mu                sync.RWMutex
+	nodes             map[string]*NodeInfo
+	hashRing          *ConsistentHash
+	nodeID            string
+	selfAddr          string
+	gossipAddr        string
+	gossipTicker      *time.Ticker
+	shutdownChan      chan struct{}
+	replication       *ReplicationState
+	healthCheckTicker *time.Ticker
+	failoverTicker    *time.Ticker
 }
 
 type ConsistentHash struct {
@@ -301,17 +420,20 @@ func (ch *ConsistentHash) GetAllNodes() []string {
 
 func NewCluster(nodeID, selfAddr, gossipAddr string) *Cluster {
 	return &Cluster{
-		nodes:        make(map[string]*NodeInfo),
-		hashRing:     NewConsistentHash(HashReplicas),
-		nodeID:       nodeID,
-		selfAddr:     selfAddr,
-		gossipAddr:   gossipAddr,
-		gossipTicker: time.NewTicker(GossipInterval),
-		shutdownChan: make(chan struct{}),
+		nodes:             make(map[string]*NodeInfo),
+		hashRing:          NewConsistentHash(HashReplicas),
+		nodeID:            nodeID,
+		selfAddr:          selfAddr,
+		gossipAddr:        gossipAddr,
+		gossipTicker:      time.NewTicker(GossipInterval),
+		shutdownChan:      make(chan struct{}),
+		replication:       NewReplicationState(),
+		healthCheckTicker: time.NewTicker(HealthCheckInterval),
+		failoverTicker:    time.NewTicker(FailoverTimeout),
 	}
 }
 
-func (c *Cluster) AddNode(nodeID, addr string) {
+func (c *Cluster) AddNode(nodeID, addr string, role NodeRole) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -319,9 +441,11 @@ func (c *Cluster) AddNode(nodeID, addr string) {
 		ID:        nodeID,
 		Addr:      addr,
 		Timestamp: time.Now().Unix(),
+		Role:      role,
+		Health:    true,
 	}
 	c.hashRing.AddNode(nodeID, addr)
-	info("Cluster: Added node %s at %s", nodeID, addr)
+	info("Cluster: Added node %s at %s as %s", nodeID, addr, role.String())
 }
 
 func (c *Cluster) RemoveNode(nodeID string) {
@@ -364,6 +488,29 @@ func (c *Cluster) GetNodeID() string {
 	return c.nodeID
 }
 
+func (c *Cluster) GetReplication() *ReplicationState {
+	return c.replication
+}
+
+func (c *Cluster) SetNodeHealth(nodeID string, healthy bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		node.Health = healthy
+	}
+}
+
+func (c *Cluster) IsNodeHealthy(nodeID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		return node.Health
+	}
+	return false
+}
+
 func (c *Cluster) StartGossip(peers []string) {
 	if len(peers) == 0 {
 		info("Cluster: No peers to gossip with")
@@ -396,9 +543,10 @@ func (c *Cluster) sendGossip(peerAddr string) {
 
 	c.mu.RLock()
 	nodesJSON, _ := json.Marshal(c.nodes)
+	replRole := c.replication.GetRole()
 	c.mu.RUnlock()
 
-	msg := fmt.Sprintf("CLUSTER_GOSSIP %s %s\n", c.nodeID, nodesJSON)
+	msg := fmt.Sprintf("CLUSTER_GOSSIP %s %s %s\n", c.nodeID, replRole.String(), nodesJSON)
 	conn.Write([]byte(msg))
 
 	reader := bufio.NewReader(conn)
@@ -410,9 +558,9 @@ func (c *Cluster) sendGossip(peerAddr string) {
 
 	if strings.HasPrefix(response, "+CLUSTER_GOSSIP") {
 		parts := strings.Fields(response)
-		if len(parts) >= 3 {
+		if len(parts) >= 4 {
 			var peerNodes map[string]*NodeInfo
-			if err := json.Unmarshal([]byte(parts[2]), &peerNodes); err == nil {
+			if err := json.Unmarshal([]byte(parts[3]), &peerNodes); err == nil {
 				c.mergeNodes(peerNodes)
 			}
 		}
@@ -431,9 +579,133 @@ func (c *Cluster) mergeNodes(peerNodes map[string]*NodeInfo) {
 	}
 }
 
+func (c *Cluster) StartHealthCheck() {
+	go func() {
+		for {
+			select {
+			case <-c.shutdownChan:
+				return
+			case <-c.healthCheckTicker.C:
+				c.checkNodeHealth()
+			}
+		}
+	}()
+}
+
+func (c *Cluster) checkNodeHealth() {
+	c.mu.RLock()
+	nodes := make([]*NodeInfo, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		if n.ID != c.nodeID {
+			nodes = append(nodes, n)
+		}
+	}
+	c.mu.RUnlock()
+
+	for _, node := range nodes {
+		conn, err := net.DialTimeout("tcp", node.Addr, 2*time.Second)
+		if err != nil {
+			c.SetNodeHealth(node.ID, false)
+			warn("Cluster: Node %s (%s) is unhealthy: %v", node.ID, node.Addr, err)
+			continue
+		}
+		conn.Write([]byte("PING\n"))
+		reader := bufio.NewReader(conn)
+		resp, _ := reader.ReadString('\n')
+		conn.Close()
+
+		if strings.Contains(resp, "PONG") {
+			c.SetNodeHealth(node.ID, true)
+		} else {
+			c.SetNodeHealth(node.ID, false)
+		}
+	}
+}
+
+func (c *Cluster) StartFailoverMonitor(masterAddr string) {
+	go func() {
+		for {
+			select {
+			case <-c.shutdownChan:
+				return
+			case <-c.failoverTicker.C:
+				if c.replication.GetRole() == RoleSlave {
+					masterAddr := c.replication.GetMasterAddr()
+					if masterAddr != "" && !c.isMasterReachable(masterAddr) {
+						info("Cluster: Master %s unreachable, initiating failover", masterAddr)
+						c.initiateFailover()
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (c *Cluster) isMasterReachable(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	return true
+}
+
+func (c *Cluster) initiateFailover() {
+	info("Cluster: Promoting self to master")
+	c.replication.SetMaster("")
+}
+
+func (c *Cluster) SyncFromMaster(masterAddr string) error {
+	conn, err := net.DialTimeout("tcp", masterAddr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to master: %w", err)
+	}
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "SYNC\n")
+
+	reader := bufio.NewReader(conn)
+	data, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read sync data: %w", err)
+	}
+
+	if strings.HasPrefix(data, "+") {
+		var storeData map[string]string
+		if err := json.Unmarshal([]byte(data[1:]), &storeData); err == nil {
+			info("Replication: Received %d keys from master", len(storeData))
+		}
+	}
+
+	return nil
+}
+
+func (c *Cluster) ReplicateToSlaves(data map[string]string) {
+	slaves := c.replication.GetSlaveAddrs()
+	for _, slaveAddr := range slaves {
+		go func(addr string) {
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+			if err != nil {
+				warn("Replication: Failed to connect to slave %s: %v", addr, err)
+				return
+			}
+			defer conn.Close()
+
+			dataJSON, _ := json.Marshal(data)
+			fmt.Fprintf(conn, "REPLICA_WRITE %s\n", dataJSON)
+		}(slaveAddr)
+	}
+}
+
 func (c *Cluster) Shutdown() {
 	close(c.shutdownChan)
 	c.gossipTicker.Stop()
+	if c.healthCheckTicker != nil {
+		c.healthCheckTicker.Stop()
+	}
+	if c.failoverTicker != nil {
+		c.failoverTicker.Stop()
+	}
 }
 
 type Server struct {
@@ -449,6 +721,7 @@ func NewServer(addr string, gossipAddr string) *Server {
 	var cluster *Cluster
 	if clusterMode {
 		cluster = NewCluster(nodeID, addr, gossipAddr)
+		cluster.AddNode(nodeID, addr, RoleMaster)
 	}
 
 	return &Server{
@@ -491,7 +764,9 @@ func (s *Server) Start() error {
 
 	if s.cluster != nil {
 		info("Cluster mode enabled")
-		s.cluster.AddNode(s.cluster.nodeID, s.addr)
+		if s.cluster.replication != nil {
+			info("Replication: Initial role is %s", s.cluster.replication.GetRole().String())
+		}
 
 		if clusterPeers != "" {
 			peers := strings.Split(clusterPeers, ",")
@@ -501,6 +776,9 @@ func (s *Server) Start() error {
 			info("Cluster: Connecting to peers: %v", peers)
 			s.cluster.StartGossip(peers)
 		}
+
+		s.cluster.StartHealthCheck()
+		s.cluster.StartFailoverMonitor("")
 	}
 
 	signalChan := make(chan os.Signal, 1)
@@ -635,7 +913,29 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 		return s.processClusterCommand(strings.ToUpper(parts[1]), parts[2:])
 	}
 
-	if s.cluster != nil && cmdUpper != "CLUSTER" && cmdUpper != "PING" && cmdUpper != "AUTH" && cmdUpper != "INFO" {
+	if cmdUpper == "REPLICAOF" {
+		return s.processReplicationCommand(parts[1:])
+	}
+
+	if cmdUpper == "SYNC" {
+		return s.processSyncCommand()
+	}
+
+	if cmdUpper == "REPLICA_WRITE" && len(parts) > 1 {
+		return s.processReplicaWriteCommand(parts[1])
+	}
+
+	if cmdUpper == "ROLE" {
+		return s.processRoleCommand()
+	}
+
+	if cmdUpper == "INFO" && len(parts) > 1 && strings.ToUpper(parts[1]) == "REPLICATION" {
+		return s.processReplicationInfoCommand()
+	}
+
+	if s.cluster != nil && cmdUpper != "CLUSTER" && cmdUpper != "PING" &&
+		cmdUpper != "AUTH" && cmdUpper != "INFO" && cmdUpper != "ROLE" &&
+		cmdUpper != "SYNC" && cmdUpper != "REPLICAOF" && cmdUpper != "REPLICA_WRITE" {
 		targetNode := s.cluster.GetNodeForKey(strings.Join(parts, " "))
 		if targetNode != s.cluster.GetNodeID() && targetNode != "" {
 			debug("Forwarding command to node %s", targetNode)
@@ -712,6 +1012,11 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 			info("SET (txn) %s %s", key, value)
 		} else {
 			s.kv.Set(key, value)
+
+			if s.cluster != nil && s.cluster.replication.GetRole() == RoleMaster &&
+				s.cluster.replication.GetSlaveAddrs() != nil {
+				s.cluster.ReplicateToSlaves(s.kv.GetAll())
+			}
 		}
 		return "+OK\r\n"
 
@@ -811,6 +1116,7 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 		if s.cluster != nil {
 			info += fmt.Sprintf("cluster_nodes: %d\r\n", len(s.cluster.GetMembers()))
 			info += fmt.Sprintf("cluster_node_id: %s\r\n", s.cluster.GetNodeID())
+			info += fmt.Sprintf("role: %s\r\n", s.cluster.replication.GetRole().String())
 		}
 		return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 
@@ -824,6 +1130,99 @@ func (s *Server) processCommand(cmd string, txn *Transaction, inTxn *bool) strin
 	}
 }
 
+func (s *Server) processReplicationCommand(args []string) string {
+	if len(args) < 2 {
+		return "-ERR wrong number of arguments for 'replicaof' command\r\n"
+	}
+
+	host := args[0]
+	port := args[1]
+
+	if host == "NO" && port == "ONE" {
+		info("Replication: Promoting to master")
+		s.cluster.replication.SetMaster("")
+		return "+OK\r\n"
+	}
+
+	masterAddr := fmt.Sprintf("%s:%s", host, port)
+
+	if port == "0" {
+		info("Replication: Promoting to master")
+		s.cluster.replication.SetMaster("")
+		return "+OK\r\n"
+	}
+
+	info("Replication: Becoming slave of %s", masterAddr)
+	s.cluster.replication.SetMaster(masterAddr)
+
+	go func() {
+		for {
+			if err := s.cluster.SyncFromMaster(masterAddr); err != nil {
+				warn("Replication: Sync failed: %v, retrying...", err)
+				time.Sleep(5 * time.Second)
+			} else {
+				break
+			}
+		}
+	}()
+
+	return "+OK\r\n"
+}
+
+func (s *Server) processSyncCommand() string {
+	data := s.kv.GetAll()
+	dataJSON, _ := json.Marshal(data)
+	return fmt.Sprintf("+%s\r\n", dataJSON)
+}
+
+func (s *Server) processReplicaWriteCommand(dataJSON string) string {
+	if s.cluster.replication.GetRole() != RoleSlave {
+		return "-ERR not a slave\r\n"
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+		return "-ERR invalid data\r\n"
+	}
+
+	s.kv.SetFromMap(data)
+	return "+OK\r\n"
+}
+
+func (s *Server) processRoleCommand() string {
+	role := s.cluster.replication.GetRole()
+	masterAddr := s.cluster.replication.GetMasterAddr()
+	slaves := s.cluster.replication.GetSlaveAddrs()
+
+	result := fmt.Sprintf("role: %s\r\n", role.String())
+	if role == RoleSlave {
+		result += fmt.Sprintf("master: %s\r\n", masterAddr)
+	} else if role == RoleMaster {
+		result += fmt.Sprintf("connected_slaves: %d\r\n", len(slaves))
+	}
+
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(result), result)
+}
+
+func (s *Server) processReplicationInfoCommand() string {
+	role := s.cluster.replication.GetRole()
+	masterAddr := s.cluster.replication.GetMasterAddr()
+	slaves := s.cluster.replication.GetSlaveAddrs()
+
+	info := fmt.Sprintf("role: %s\r\n", role.String())
+	if role == RoleSlave {
+		info += fmt.Sprintf("master_link_status: up\r\n")
+		info += fmt.Sprintf("master_host: %s\r\n", masterAddr)
+	} else {
+		info += fmt.Sprintf("connected_slaves: %d\r\n", len(slaves))
+		for i, slave := range slaves {
+			info += fmt.Sprintf("slave_%d: %s\r\n", i, slave)
+		}
+	}
+
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
+}
+
 func (s *Server) processClusterCommand(subCmd string, args []string) string {
 	if s.cluster == nil {
 		return "-ERR cluster mode not enabled\r\n"
@@ -835,8 +1234,13 @@ func (s *Server) processClusterCommand(subCmd string, args []string) string {
 		info := fmt.Sprintf("cluster_enabled: true\r\n")
 		info += fmt.Sprintf("cluster_node_id: %s\r\n", s.cluster.GetNodeID())
 		info += fmt.Sprintf("cluster_nodes: %d\r\n", len(members))
+		info += fmt.Sprintf("cluster_my_role: %s\r\n", s.cluster.replication.GetRole().String())
 		for _, m := range members {
-			info += fmt.Sprintf("cluster_node: %s %s\r\n", m.ID, m.Addr)
+			healthStr := "healthy"
+			if !m.Health {
+				healthStr = "unhealthy"
+			}
+			info += fmt.Sprintf("cluster_node: %s %s %s %s\r\n", m.ID, m.Addr, m.Role.String(), healthStr)
 		}
 		return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 
@@ -847,7 +1251,7 @@ func (s *Server) processClusterCommand(subCmd string, args []string) string {
 		}
 		result := fmt.Sprintf("*%d\r\n", len(members))
 		for _, m := range members {
-			nodeInfo := fmt.Sprintf("%s %s", m.ID, m.Addr)
+			nodeInfo := fmt.Sprintf("%s %s %s", m.ID, m.Addr, m.Role.String())
 			result += fmt.Sprintf("$%d\r\n%s\r\n", len(nodeInfo), nodeInfo)
 		}
 		return result
@@ -859,6 +1263,14 @@ func (s *Server) processClusterCommand(subCmd string, args []string) string {
 		peerAddr := args[0]
 		s.cluster.StartGossip([]string{peerAddr})
 		info("Cluster: Joined peer %s", peerAddr)
+		return "+OK\r\n"
+
+	case "ADDSLAVE":
+		if len(args) < 1 {
+			return "-ERR wrong number of arguments for 'cluster addslave' command\r\n"
+		}
+		slaveAddr := args[0]
+		s.cluster.replication.AddSlave(slaveAddr)
 		return "+OK\r\n"
 
 	default:
