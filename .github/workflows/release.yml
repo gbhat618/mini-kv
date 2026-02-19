@@ -35,8 +35,8 @@ jobs:
       - name: Build server Linux
         run: |
           cd server && go mod download
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-server .
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-server-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ../mini-kv-server ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ../mini-kv-server-arm64 ./cmd/server
 
       - name: Build CLI Linux
         run: |
@@ -46,14 +46,14 @@ jobs:
 
       - name: Build macOS binaries
         run: |
-          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-server-darwin-amd64 .
-          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-server-darwin-arm64 .
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-server-darwin-amd64 ./cmd/server
+          cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-server-darwin-arm64 ./cmd/server
           cd ../cli && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o ../mini-kv-cli-darwin-amd64 .
           cd ../cli && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o ../mini-kv-cli-darwin-arm64 .
 
       - name: Build Windows binaries
         run: |
-          cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-server.exe .
+          cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-server.exe ./cmd/server
           cd ../cli && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o ../mini-kv-cli.exe .
 
       - name: Create Release
