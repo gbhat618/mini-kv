@@ -7,18 +7,21 @@ import (
 )
 
 var (
-	MaxKeySize   = DefaultMaxKeySize
-	MaxValueSize = DefaultMaxValueSize
-	MaxConns     = DefaultMaxConns
-	AuthPassword string
-	TLSCertFile  string
-	TLSKeyFile   string
-	ReadTimeout  = DefaultReadTimeout
-	ClusterMode  bool
-	ClusterPeers string
-	NodeID       string
-	GossipPort   = 16379
-	logLevelFlag string
+	MaxKeySize     = DefaultMaxKeySize
+	MaxValueSize   = DefaultMaxValueSize
+	MaxConns       = DefaultMaxConns
+	AuthPassword   string
+	TLSCertFile    string
+	TLSKeyFile     string
+	ReadTimeout    = DefaultReadTimeout
+	ClusterMode    bool
+	ClusterPeers   string
+	NodeID         string
+	GossipPort     = 16379
+	ConsolePort    = "8080"
+	ConsoleEnabled bool
+	ServerPort     = ":6379"
+	logLevelFlag   string
 )
 
 const (
@@ -48,6 +51,9 @@ func ParseFlags() {
 	flag.StringVar(&ClusterPeers, "peers", "", "Comma-separated list of peer addresses (for cluster mode)")
 	flag.StringVar(&NodeID, "node-id", "", "Unique node ID (generated if not provided)")
 	flag.IntVar(&GossipPort, "gossip-port", 16379, "Port for inter-node gossip communication")
+	flag.StringVar(&ConsolePort, "console-port", "8080", "Port for management console UI")
+	flag.BoolVar(&ConsoleEnabled, "console", false, "Enable management console UI")
+	flag.StringVar(&ServerPort, "port", ":6379", "Server port")
 
 	flag.Parse()
 

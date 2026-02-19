@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"mini-kv/internal"
+	"mini-kv/server/console"
 )
 
 func generateNodeID() string {
@@ -24,7 +25,7 @@ func main() {
 		internal.NodeID = generateNodeID()
 	}
 
-	addr := internal.GetAddress()
+	addr := internal.ServerPort
 	gossipAddr := internal.GetGossipAddress()
 
 	server := internal.NewServer(addr, gossipAddr)
@@ -42,6 +43,19 @@ func main() {
 	}
 
 	internal.SetLogger(log.New(os.Stdout, "", 0))
+
+	if internal.ConsoleEnabled {
+		hub := console.NewHub(server.GetKV(), server)
+		consoleServer := console.NewServer(internal.ConsolePort)
+		consoleServer.SetHub(hub)
+
+		go func() {
+			if err := consoleServer.Start(); err != nil {
+				log.Printf("Console server error: %v", err)
+			}
+		}()
+		log.Printf("Management console enabled at http://localhost:%s", internal.ConsolePort)
+	}
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server error: %v", err)

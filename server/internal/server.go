@@ -196,3 +196,7 @@ func (s *Server) GetKV() *MiniKV {
 func (s *Server) ProcessCommand(cmd string, txn *Transaction, inTxn *bool) string {
 	return s.commandProcessor.ProcessCommand(cmd, txn, inTxn)
 }
+
+func (s *Server) GetConnectionCount() int32 {
+	return s.connCount.Load()
+}
